@@ -4,7 +4,7 @@ Has additional dependencies on Pytorch dataloaders and Optax optimizers.
 
 We also onboard to Marimo in `marimo_equinox_cifar10.py`: https://docs.marimo.io/getting_started/index.html. To run, just run `marimo edit src/toy/marimo_equinox_cifar10.py`. 
 
-However, that makes this code block required for parity between `python marimo_equinox_cifar10.py` and running interactively:
+However, we require this code block for parity between `python marimo_equinox_cifar10.py` and running interactively:
 
 ```
 import sys
@@ -12,4 +12,4 @@ import os
 sys.path[0] = f'{os.getcwd()}/src/toy'
 ```
 
-It also blocks * imports which is another change from `equinox_cifar10.py`.
+It also blocks * imports, which is another change from `equinox_cifar10.py`. We import every hyperparam separately.
