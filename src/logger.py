@@ -21,7 +21,10 @@ class Logger:
     """Homebrew logger"""
 
     def __init__(
-        self, namespace: str, logging_level: LoggingLevel = LoggingLevel.DEBUG, preamble_length = 50
+        self,
+        namespace: str,
+        logging_level: LoggingLevel = LoggingLevel.DEBUG,
+        preamble_length=50,
     ):
         self.namespace = namespace
         self.logging_level = LEVELS[logging_level]
@@ -29,10 +32,10 @@ class Logger:
 
     def print_format(self, level: str, message: str):
         preamble = f"[{datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')[:-3]}][{level}] {self.namespace}: "
-        if '\n' not in message:
+        if "\n" not in message:
             print("{:<45} {}".format(preamble, message))
         else:
-            messages_split = message.split('\n')
+            messages_split = message.split("\n")
             print("{:<45} {}".format(preamble, messages_split[0]))
             for message in messages_split[1:]:
                 print("{:<45} {}".format("  ", message))

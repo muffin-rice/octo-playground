@@ -64,18 +64,43 @@ class LossInformation(NamedTuple):
     entropy_loss: Float[Array, ""]
 
 
-def create_trajectory_from_transitions(transition_list: [Transition], agent_list: [str]) -> Trajectory:
+def create_trajectory_from_transitions(
+    transition_list: [Transition], agent_list: [str]
+) -> Trajectory:
     """Helper function to map a list of transitions into a trajectory"""
     return Trajectory(
-        {agent: jnp.stack([transition.done[agent] for transition in transition_list], axis=1) for agent in agent_list},
-        {agent: jnp.stack([transition.action[agent] for transition in transition_list], axis=1) for agent in agent_list},
-        {agent: jnp.stack([transition.reward[agent] for transition in transition_list], axis=1) for agent in agent_list},
-        {agent: jnp.stack([transition.obs[agent] for transition in transition_list], axis=1) for agent in agent_list},
+        {
+            agent: jnp.stack(
+                [transition.done[agent] for transition in transition_list], axis=1
+            )
+            for agent in agent_list
+        },
+        {
+            agent: jnp.stack(
+                [transition.action[agent] for transition in transition_list], axis=1
+            )
+            for agent in agent_list
+        },
+        {
+            agent: jnp.stack(
+                [transition.reward[agent] for transition in transition_list], axis=1
+            )
+            for agent in agent_list
+        },
+        {
+            agent: jnp.stack(
+                [transition.obs[agent] for transition in transition_list], axis=1
+            )
+            for agent in agent_list
+        },
         jnp.stack([transition.model_value for transition in transition_list], axis=1),
         jnp.stack([transition.log_prob for transition in transition_list], axis=1),
     )
 
-def create_transitions_from_trajectory(trajectory: Trajectory, agent_list: [str]) -> [Transition]:
+
+def create_transitions_from_trajectory(
+    trajectory: Trajectory, agent_list: [str]
+) -> [Transition]:
     """Helper function to map a trajectory into a list of transitions
     Loses info information"""
     num_steps = trajectory.t_done[agent_list[0]].shape[1]
@@ -88,10 +113,14 @@ def create_transitions_from_trajectory(trajectory: Trajectory, agent_list: [str]
             {},
             trajectory.t_model_value[:, i],
             trajectory.t_log_prob[:, i],
-        ) for i in range(num_steps)
+        )
+        for i in range(num_steps)
     ]
 
-def create_transition_list_from_transitions(transitions: Transition, agent_list: [str]) -> [Transition]:
+
+def create_transition_list_from_transitions(
+    transitions: Transition, agent_list: [str]
+) -> [Transition]:
     """Helper function to map the post-scan transition into a list of transitions
     Loses info information"""
     num_steps = transitions.done[agent_list[0]].shape[0]
@@ -104,5 +133,6 @@ def create_transition_list_from_transitions(transitions: Transition, agent_list:
             {},
             transitions.model_value[i, :],
             transitions.log_prob[i, :],
-        ) for i in range(num_steps)
+        )
+        for i in range(num_steps)
     ]

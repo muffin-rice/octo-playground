@@ -6,16 +6,23 @@ from src.ppo_marl.ppo_types import Trajectory, Transition
 import JaxMARL.jaxmarl.environments
 
 
-def batchify(env_attr: dict, agent_list: [str], num_envs: int, additional_squeeze: bool = False) -> Float[Array, ""]:
+def batchify(
+    env_attr: dict, agent_list: [str], num_envs: int, additional_squeeze: bool = False
+) -> Float[Array, ""]:
     """JaxMARL envs have attributes agent_id: array. Unpack this dictionary
     into an array to be completely vectorized"""
     # make arr num_agents x num_envs x (optional if trajectory) x (dtype)
     env_attr_array = jnp.stack([env_attr[agent] for agent in agent_list])
 
-    if additional_squeeze: # if we want to squeeze one additional dim, eg. (optional if trajectory)
-        return env_attr_array.reshape((len(agent_list) * num_envs * env_attr_array.shape[2], -1))
+    if (
+        additional_squeeze
+    ):  # if we want to squeeze one additional dim, eg. (optional if trajectory)
+        return env_attr_array.reshape(
+            (len(agent_list) * num_envs * env_attr_array.shape[2], -1)
+        )
     else:
         return env_attr_array.reshape((len(agent_list) * num_envs, -1))
+
 
 def reverse_batchify(
     env_attr_array: Float[Array, ""], agent_list: [str], num_envs: int
@@ -44,25 +51,29 @@ def dtype_as_str(x: Any) -> str:
         return x
 
     if isinstance(x, Transition):
-        return dict_as_str({
-            "done": x.done,
-            "action": x.action,
-            "reward": x.reward,
-            "obs": x.obs,
-            "info": x.info,
-            "model_value": x.model_value,
-            "log_prob": x.log_prob
-        })
+        return dict_as_str(
+            {
+                "done": x.done,
+                "action": x.action,
+                "reward": x.reward,
+                "obs": x.obs,
+                "info": x.info,
+                "model_value": x.model_value,
+                "log_prob": x.log_prob,
+            }
+        )
 
     if isinstance(x, Trajectory):
-        return dict_as_str({
-            "t_done": x.t_done,
-            "t_action": x.t_action,
-            "t_reward": x.t_reward,
-            "t_obs": x.t_obs,
-            "t_model_value": x.t_model_value,
-            "t_log_prob": x.t_log_prob
-        })
+        return dict_as_str(
+            {
+                "t_done": x.t_done,
+                "t_action": x.t_action,
+                "t_reward": x.t_reward,
+                "t_obs": x.t_obs,
+                "t_model_value": x.t_model_value,
+                "t_log_prob": x.t_log_prob,
+            }
+        )
 
     return str(type(x))
 

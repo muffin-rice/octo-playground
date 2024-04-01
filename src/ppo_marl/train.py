@@ -124,7 +124,10 @@ def get_env_step_function(
         action, log_prob = model_pi.sample_and_log_prob(seed=key_action)
         # put actions into a dictionary with agent name as str and flatten the action array
         # from (num_envs, 1) -> (num_envs,)
-        action_unbatch = {k: v.flatten() for k, v in reverse_batchify(action, agent_list, config["NUM_ENVS"]).items()}
+        action_unbatch = {
+            k: v.flatten()
+            for k, v in reverse_batchify(action, agent_list, config["NUM_ENVS"]).items()
+        }
 
         LOGGER.debug(f"Action was chosen with shapes {dtype_as_str(action_unbatch)}")
 
@@ -155,11 +158,7 @@ def get_env_step_function(
             log_prob,
         )
 
-        new_trajectory_state = TrajectoryState(
-            key,
-            env_state,
-            obs_batch
-        )
+        new_trajectory_state = TrajectoryState(key, env_state, obs_batch)
 
         return new_trajectory_state, transition
 
@@ -243,10 +242,15 @@ def get_actor_loss(
 
 
 def get_loss(
-    trajectory: Trajectory, model: ActorCritic, old_model: ActorCritic, agent_list: [str]
+    trajectory: Trajectory,
+    model: ActorCritic,
+    old_model: ActorCritic,
+    agent_list: [str],
 ) -> (Float, LossInformation):
     """Compute loss of entire trajectory"""
-    obs_batched = batchify(trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True)
+    obs_batched = batchify(
+        trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True
+    )
     LOGGER.info(f"Computing loss for observation {dtype_as_str(obs_batched)}")
 
     # get current model vals
@@ -307,13 +311,17 @@ def make_full_step(
     func_env_step = get_env_step_function(env, model)
     # run env_step to get list of transitions
     trajectory_state, transition_scan_list = jax.lax.scan(
-        func_env_step, trajectory_state, None, length = config["NUM_STEPS"]
+        func_env_step, trajectory_state, None, length=config["NUM_STEPS"]
     )
-    transition_list = create_transition_list_from_transitions(transition_scan_list, env.agents)
+    transition_list = create_transition_list_from_transitions(
+        transition_scan_list, env.agents
+    )
 
-    LOGGER.info(f"Completed trajectory with transition list length {len(transition_list)}. "
-                f"State timestamps across envs are {trajectory_state.env_state.time} and "
-                f"shape of done array is {transition_list[-1].done['agent_1'].shape}")
+    LOGGER.info(
+        f"Completed trajectory with transition list length {len(transition_list)}. "
+        f"State timestamps across envs are {trajectory_state.env_state.time} and "
+        f"shape of done array is {transition_list[-1].done['agent_1'].shape}"
+    )
 
     assert isinstance(transition_list, list)
 
