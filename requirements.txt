@@ -23,7 +23,7 @@ build==1.1.1
 certifi==2021.10.8
 cffi==1.16.0
 charset-normalizer==3.3.2
-chex==0.1.85
+chex==0.1.86
 click==8.0.4
 cloudpickle==2.0.0
 comm==0.2.2
@@ -88,9 +88,9 @@ ipython-genutils==0.2.0
 ipywidgets==7.6.5
 isoduration==20.11.0
 itsdangerous==2.1.2
-jax==0.4.20
-jax-metal==0.0.5
-jaxlib==0.4.20
+jax==0.4.26
+jax-metal==0.0.6
+jaxlib==0.4.23
 -e git+https://github.com/FLAIROx/JaxMARL@954b27d1cf27721adef47e5a9efcdad24dc14037#egg=jaxmarl&subdirectory=../../JaxMARL
 jaxopt==0.8.3
 jaxtyping==0.2.28
@@ -145,7 +145,7 @@ numcodecs==0.12.1
 numpy==1.26.4
 omegaconf==2.3.0
 opt-einsum==3.3.0
-optax==0.1.8
+optax==0.2.2
 orbax-checkpoint==0.5.6
 overrides==7.7.0
 packaging==24.0

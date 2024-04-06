@@ -129,7 +129,10 @@ def get_env_step_function(
             for k, v in reverse_batchify(action, agent_list, config["NUM_ENVS"]).items()
         }
 
-        LOGGER.debug(f"Action was chosen with shapes {dtype_as_str(action_unbatch)}")
+        LOGGER.debug(
+            f"Action was chosen with shapes {dtype_as_str(action_unbatch)}\n"
+            f"Log prob was calculated with shapes {dtype_as_str(log_prob)}"
+        )
 
         # apply action to env
         key, key_env_unsplit = jax.random.split(key, 2)
@@ -145,7 +148,7 @@ def get_env_step_function(
             f"Info is: {info}"
         )
 
-        info = jax.tree_map(lambda x: x.reshape((config["NUM_AGENTS"])), info)
+        info = jax.tree.map(lambda x: x.reshape((config["NUM_AGENTS"])), info)
         LOGGER.debug(f"Transformed info into {info}")
 
         transition = Transition(
@@ -165,9 +168,15 @@ def get_env_step_function(
     return env_step
 
 
-def calculate_gae(trajectory: Trajectory) -> Float[Array, "batch"]:
+def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "batch"]:
     """Given the list of transitions across the trajectory, calculate
     the GAE."""
+    t_done_batched = batchify(trajectory.t_done, agent_list, config["NUM_ENVS"])
+    t_reward_batched = batchify(trajectory.t_reward, agent_list, config["NUM_ENVS"])
+
+    LOGGER.info(
+        f"Batched trajectory done and reward: {dtype_as_str(t_done_batched)} {dtype_as_str(t_reward_batched)}"
+    )
 
     class GAECarryState(NamedTuple):
         next_gae: Float[
@@ -187,8 +196,8 @@ def calculate_gae(trajectory: Trajectory) -> Float[Array, "batch"]:
         We call jax.lax.scan with reverse to make arithmetic easier."""
         next_gae, next_value, index = carry_state
         done, reward = (
-            trajectory.t_done[:, -index - 1],
-            trajectory.t_reward[:, -index - 1],
+            t_done_batched[:, -index - 1],
+            t_reward_batched[:, -index - 1],
         )
         gae = (
             reward
@@ -201,32 +210,48 @@ def calculate_gae(trajectory: Trajectory) -> Float[Array, "batch"]:
     # for a batch x d array of values/rewards, aggregate amongst the d dimension.
     # this means we .scan across the transpose of this array.
     # we should theoretically end up with batch, array of gaes
-    inital_carry_state = GAECarryState(
-        jnp.zeros_like(trajectory.t_done[:, 0]),
-        jnp.zeros_like(trajectory.t_done[:, 0]),
+    initial_carry_state = GAECarryState(
+        jnp.zeros_like(t_done_batched[:, 0], dtype=jnp.float32),
+        jnp.zeros_like(t_done_batched[:, 0], dtype=jnp.float32),
         0,
     )
 
     _, gaes = jax.lax.scan(
         calculate_advantage,
-        inital_carry_state,
-        trajectory.t_value,
+        initial_carry_state,
+        trajectory.t_model_value.transpose((1, 0)),
         reverse=True,
         # unroll = 16 # num steps. TODO: we already have num_steps as limit. necessary? although this is the num steps from the back.
     )
-    LOGGER.debug(f"Computed GAE shape: {gaes.shape}")
+    LOGGER.debug(f"Computed GAE: {dtype_as_str(gaes)}")
     return gaes[-1, :]
 
 
 def calculate_model_logprob(
-    model: ActorCritic, trajectory: Trajectory
+    model: ActorCritic,
+    trajectory: Trajectory,
+    agent_list: str,
 ) -> Float[Array, "batch"]:
     """Given old actor/critic, generate logprob for given trajectory batch."""
+    t_obs_batched = batchify(
+        trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True
+    )
+    t_action_batched = batchify(
+        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+    )
+
     # logits (not logged) for each step, each batch
-    model_pi, model_value = jax.vmap(model, in_axes=(0, 0))(trajectory.t_obs)
+    model_pi, model_value = jax.vmap(model)(t_obs_batched)
     # log probs for the trajectory is the sum across the steps
-    LOGGER.debug(f"Categorical for each step has shape: {model_pi.batch_shape}")
-    return jax.vmap(model_pi.log_prob, in_axes=(0, 0))(trajectory.t_action).sum(axis=1)
+    model_logprobs = model_pi.log_prob(t_action_batched[:, 0])
+
+    LOGGER.debug(
+        f"Categoricals for trajectory: {model_pi.num_categories}\n"
+        f"Logprobs for trajectory: {dtype_as_str(model_logprobs)}\n"
+        f"Actions for trajectory: {dtype_as_str(t_action_batched)}"
+    )
+
+    return model_logprobs
 
 
 def get_actor_loss(
@@ -234,11 +259,17 @@ def get_actor_loss(
     new_log_prob: Float[Array, "batch"],
     old_log_prob: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    ratio = new_log_prob / old_log_prob
+    ratio = (new_log_prob / old_log_prob).reshape(
+        config["NUM_ENVS"] * config["NUM_AGENTS"], config["NUM_STEPS"]
+    )
     clipped_ratio = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"])
 
+    LOGGER.debug(
+        f"Calculated ratio {dtype_as_str(ratio)} and clipped ratio {dtype_as_str(clipped_ratio)}"
+    )
+
     # the ratio is actually the gain, so we negate it
-    return -jnp.minimum(ratio * gae, clipped_ratio * gae).mean()
+    return -jnp.minimum(ratio * gae[:, None], clipped_ratio * gae[:, None]).mean()
 
 
 def get_loss(
@@ -248,34 +279,53 @@ def get_loss(
     agent_list: [str],
 ) -> (Float, LossInformation):
     """Compute loss of entire trajectory"""
-    obs_batched = batchify(
+    # first batch out the trajectory
+    t_obs_batched = batchify(
         trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True
     )
-    LOGGER.info(f"Computing loss for observation {dtype_as_str(obs_batched)}")
+    t_actions_batched = batchify(
+        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+    )
+    t_model_values_batched = batchify(
+        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+    )
+
+    LOGGER.debug(
+        f"Batchified objects in trajectory: observation {dtype_as_str(t_obs_batched)}, actions {dtype_as_str(t_actions_batched)}, values {dtype_as_str(t_model_values_batched)}"
+    )
 
     # get current model vals
-    model_pi, model_value = jax.vmap(model)(obs_batched)
+    model_pi, model_value = jax.vmap(model)(t_obs_batched)
 
     # log probs for the trajectory is the sum across the steps
-    LOGGER.debug(f"Categorical for each step has shape: {model_pi.batch_shape}")
-    model_logprob = jax.vmap(model_pi.log_prob)(trajectory.t_action)
+    model_logprob = model_pi.log_prob(t_actions_batched[:, 0])
+
+    LOGGER.debug(
+        f"Calculating critic loss from logprob {dtype_as_str(model_logprob)} and value {dtype_as_str(model_value)}..."
+    )
 
     # calculate critic loss
-    clipped_model_value = trajectory.t_model_value + (
-        model_value - trajectory.t_model_value
+    clipped_model_value = t_model_values_batched + (
+        model_value - t_model_values_batched
     ).clip(-config["CLIP_VAL"], config["CLIP_VAL"])
     # TODO: what is targets?
-    unclipped_value_loss = jnp.square(trajectory.t_model_value - model_value)
-    clipped_value_loss = jnp.square(trajectory.t_model_value - clipped_model_value)
+    unclipped_value_loss = jnp.square(t_model_values_batched - model_value)
+    clipped_value_loss = jnp.square(t_model_values_batched - clipped_model_value)
     # TODO: why the /2?
     critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
 
+    LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
+
+    LOGGER.debug("Calculating actor loss...")
+
     # calculate actor loss
     actor_loss = get_actor_loss(
-        calculate_gae(trajectory),
+        calculate_gae(trajectory, agent_list),
         model_logprob,
-        calculate_model_logprob(old_model, trajectory),
+        calculate_model_logprob(old_model, trajectory, agent_list),
     )
+
+    LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
 
     # entropy
     entropy_loss = model_pi.entropy().mean()
@@ -309,6 +359,9 @@ def make_full_step(
     trajectory_state = TrajectoryState(key, env_state, obs)
 
     func_env_step = get_env_step_function(env, model)
+
+    LOGGER.info(f"Running {config['NUM_STEPS']} steps in env...")
+
     # run env_step to get list of transitions
     trajectory_state, transition_scan_list = jax.lax.scan(
         func_env_step, trajectory_state, None, length=config["NUM_STEPS"]
@@ -330,14 +383,21 @@ def make_full_step(
     # construct trajectory from list of transitions
     sampled_trajectory = create_trajectory_from_transitions(transition_list, env.agents)
 
-    LOGGER.debug(f"Trajectory dtype has shape {dtype_as_str(sampled_trajectory)}")
+    LOGGER.debug(
+        f"Created trajectory from transition list: {dtype_as_str(sampled_trajectory)}"
+    )
+
+    LOGGER.debug("Calculating loss...")
 
     # perform backwards steps
-    (loss_info), grad = eqx.filter_value_and_grad(get_loss, has_aux=True)(
+    (loss_info), grads = eqx.filter_value_and_grad(get_loss, has_aux=True)(
         sampled_trajectory, model, old_model, env.agents
     )
+    LOGGER.info(f"Calculated loss: {loss_info}")
+
+    LOGGER.debug("Calculating optimizer update")
     # TODO: get opt_state typing
-    updates, opt_state = optim.update(grad, opt_state, model)
+    updates, opt_state = optim.update(grads, opt_state, model)
     new_model = eqx.apply_updates(model, updates)
 
     new_train_state = TrainState(
