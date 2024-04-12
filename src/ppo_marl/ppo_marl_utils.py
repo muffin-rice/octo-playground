@@ -1,9 +1,10 @@
-import jax.numpy as jnp
-from jaxtyping import Array, Float
-from typing import Any, Dict
-from src.ppo_marl.ppo_types import Trajectory, Transition
-
+import dill
 import JaxMARL.jaxmarl.environments
+import jax.numpy as jnp
+from jaxtyping import Array, Float, UInt32
+from typing import Any, Dict
+
+from src.ppo_marl.ppo_types import Trajectory, Transition, TrainState
 
 
 def batchify(
@@ -84,3 +85,16 @@ def dict_as_str(d: Dict) -> str:
     agent_id as the key."""
     s = "\n\t".join(f"{k}: {dtype_as_str(v)}" for k, v in d.items())
     return "{" + s + "}"
+
+
+def save_train_state(
+    filename: str, key: UInt32[Array, ""], train_state: TrainState, epoch_num: int
+) -> None:
+    # TODO: save with eqx serialization and avoid dill
+    with open(filename + ".ckpt", "wb") as f:
+        dill.dump((key, train_state, epoch_num), f)
+
+
+def load_train_state(filename: str) -> (UInt32[Array, ""], TrainState, int):
+    with open(filename + ".ckpt", "rb") as f:
+        return dill.load(f)

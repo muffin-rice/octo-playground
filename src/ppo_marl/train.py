@@ -20,8 +20,9 @@ import optax
 import JaxMARL.jaxmarl as jaxmarl
 from JaxMARL.jaxmarl.environments.overcooked import overcooked_layouts
 
-from src.ppo_marl.config import ppo_marl_config as config
+from src.ppo_marl.config import model_config, loss_config, env_config
 from src.ppo_marl.ppo_types import (
+    ActorCritic,
     LossInformation,
     TrainState,
     Transition,
@@ -32,63 +33,22 @@ from src.ppo_marl.ppo_types import (
 )
 from src.ppo_marl.ppo_marl_utils import (
     batchify,
-    reverse_batchify,
     dtype_as_str,
+    load_train_state,
+    reverse_batchify,
+    save_train_state,
 )
 from src.logger import Logger
 
 LOGGER = Logger("train.py")
 
 
-class ActorCritic(eqx.Module):
-    """Actor Critic class for PPO"""
-
-    actor_layers: []
-    critic_layers: []
-
-    def __init__(self, key: Array, observation_dim: int, action_dim: int):
-        LOGGER.info(
-            f"Creating model with key {key}, observation dim {observation_dim}, action dim {action_dim}"
-        )
-        keyx = jax.random.split(key, 10)
-
-        self.actor_layers = [
-            eqx.nn.Linear(observation_dim, 64, key=keyx[0]),
-            jax.nn.tanh,
-            eqx.nn.Linear(64, 64, key=keyx[1]),
-            jax.nn.tanh,
-            eqx.nn.Linear(64, action_dim, key=keyx[2]),
-        ]
-
-        self.critic_layers = [
-            eqx.nn.Linear(observation_dim, 64, key=keyx[3]),
-            jax.nn.tanh,
-            eqx.nn.Linear(64, 64, key=keyx[4]),
-            jax.nn.tanh,
-            eqx.nn.Linear(64, 1, key=keyx[5]),
-        ]
-
-    def __call__(self, x: Array) -> (distrax.Categorical, Array):
-        LOGGER.debug(f"Input received with shape {x.shape}")
-        actor_mean = x
-        for actor_layer in self.actor_layers:
-            actor_mean = actor_layer(actor_mean)
-
-        pi = distrax.Categorical(logits=actor_mean)
-
-        critic_output = x
-        for critic_layer in self.critic_layers:
-            critic_output = critic_layer(critic_output)
-
-        return pi, jnp.squeeze(critic_output, axis=-1)
-
-
 def linear_schedule(count) -> float:
-    frac = 1.0 - count / config["NUM_EPISODES"]
+    frac = 1.0 - count / env_config["NUM_EPISODES"]
     return (
-        config["LR"]
+        loss_config["LR"]
         * frac
-        / (config["NUM_STEPS"] * config["NUM_AGENTS"] * config["NUM_ENVS"])
+        / (env_config["NUM_STEPS"] * env_config["NUM_AGENTS"] * env_config["NUM_ENVS"])
     )
 
 
@@ -107,7 +67,7 @@ def get_env_step_function(
         agent_list: [str] = env_obs.keys()
 
         # get env_obs as array
-        env_obs_array = batchify(env_obs, agent_list, config["NUM_ENVS"])
+        env_obs_array = batchify(env_obs, agent_list, env_config["NUM_ENVS"])
 
         # predictions for this current state
         model_output = jax.vmap(model)(env_obs_array)
@@ -125,7 +85,9 @@ def get_env_step_function(
         # from (num_envs, 1) -> (num_envs,)
         action_unbatch = {
             k: v.flatten()
-            for k, v in reverse_batchify(action, agent_list, config["NUM_ENVS"]).items()
+            for k, v in reverse_batchify(
+                action, agent_list, env_config["NUM_ENVS"]
+            ).items()
         }
 
         LOGGER.debug(
@@ -135,7 +97,7 @@ def get_env_step_function(
 
         # apply action to env
         key, key_env_unsplit = jax.random.split(key, 2)
-        key_env = jax.random.split(key_env_unsplit, config["NUM_ENVS"])
+        key_env = jax.random.split(key_env_unsplit, env_config["NUM_ENVS"])
 
         obs_batch, env_state, reward, done, info = jax.vmap(
             env.step, in_axes=(0, 0, 0)
@@ -147,7 +109,7 @@ def get_env_step_function(
             f"Info is: {info}"
         )
 
-        info = jax.tree.map(lambda x: x.reshape((config["NUM_AGENTS"])), info)
+        info = jax.tree.map(lambda x: x.reshape((env_config["NUM_AGENTS"])), info)
         LOGGER.debug(f"Transformed info into {info}")
 
         transition = Transition(
@@ -170,8 +132,8 @@ def get_env_step_function(
 def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "batch"]:
     """Given the list of transitions across the trajectory, calculate
     the GAE."""
-    t_done_batched = batchify(trajectory.t_done, agent_list, config["NUM_ENVS"])
-    t_reward_batched = batchify(trajectory.t_reward, agent_list, config["NUM_ENVS"])
+    t_done_batched = batchify(trajectory.t_done, agent_list, env_config["NUM_ENVS"])
+    t_reward_batched = batchify(trajectory.t_reward, agent_list, env_config["NUM_ENVS"])
 
     LOGGER.info(
         f"Batched trajectory done and reward: {dtype_as_str(t_done_batched)} {dtype_as_str(t_reward_batched)}"
@@ -201,8 +163,8 @@ def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "ba
         gae = (
             reward
             - curr_value
-            + next_value * config["GAMMA"]
-            + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * next_gae
+            + next_value * loss_config["GAMMA"]
+            + loss_config["GAMMA"] * loss_config["GAE_LAMBDA"] * (1 - done) * next_gae
         )
         return GAECarryState(next_gae=gae, next_value=curr_value, index=index + 1), gae
 
@@ -233,10 +195,10 @@ def calculate_model_logprob(
 ) -> Float[Array, "batch"]:
     """Given old actor/critic, generate logprob for given trajectory batch."""
     t_obs_batched = batchify(
-        trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True
+        trajectory.t_obs, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
     t_action_batched = batchify(
-        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
 
     # logits (not logged) for each step, each batch
@@ -259,9 +221,11 @@ def get_actor_loss(
     old_log_prob: Float[Array, "batch"],
 ) -> Float[Array, ""]:
     ratio = (new_log_prob / old_log_prob).reshape(
-        config["NUM_ENVS"] * config["NUM_AGENTS"], config["NUM_STEPS"]
+        env_config["NUM_ENVS"] * env_config["NUM_AGENTS"], env_config["NUM_STEPS"]
     )
-    clipped_ratio = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"])
+    clipped_ratio = jnp.clip(
+        ratio, 1.0 - loss_config["CLIP_EPS"], 1.0 + loss_config["CLIP_EPS"]
+    )
 
     LOGGER.debug(
         f"Calculated ratio {dtype_as_str(ratio)} and clipped ratio {dtype_as_str(clipped_ratio)}"
@@ -280,13 +244,13 @@ def get_loss(
     """Compute loss of entire trajectory"""
     # first batch out the trajectory
     t_obs_batched = batchify(
-        trajectory.t_obs, agent_list, config["NUM_ENVS"], additional_squeeze=True
+        trajectory.t_obs, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
     t_actions_batched = batchify(
-        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
     t_model_values_batched = batchify(
-        trajectory.t_action, agent_list, config["NUM_ENVS"], additional_squeeze=True
+        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
 
     LOGGER.debug(
@@ -306,7 +270,7 @@ def get_loss(
     # calculate critic loss
     clipped_model_value = t_model_values_batched + (
         model_value - t_model_values_batched
-    ).clip(-config["CLIP_VAL"], config["CLIP_VAL"])
+    ).clip(-loss_config["CLIP_VAL"], loss_config["CLIP_VAL"])
     # TODO: what is targets?
     unclipped_value_loss = jnp.square(t_model_values_batched - model_value)
     clipped_value_loss = jnp.square(t_model_values_batched - clipped_model_value)
@@ -330,9 +294,9 @@ def get_loss(
     entropy_loss = model_pi.entropy().mean()
 
     total_loss = (
-        config["CRITIC_LOSS"] * critic_loss
-        + config["ACTOR_LOSS"] * actor_loss
-        + config["ENTROPY_LOSS"] * entropy_loss
+        loss_config["CRITIC_LOSS"] * critic_loss
+        + loss_config["ACTOR_LOSS"] * actor_loss
+        + loss_config["ENTROPY_LOSS"] * entropy_loss
     )
 
     return total_loss, LossInformation(actor_loss, critic_loss, entropy_loss)
@@ -349,7 +313,7 @@ def make_full_step(
 
     # initialize values
     key, key_unsplit = jax.random.split(key)
-    key_envs = jax.random.split(key_unsplit, config["NUM_ENVS"])
+    key_envs = jax.random.split(key_unsplit, env_config["NUM_ENVS"])
     # reset env
     obs, env_state = jax.vmap(env.reset)(key_envs)
     LOGGER.info(
@@ -360,11 +324,11 @@ def make_full_step(
 
     func_env_step = get_env_step_function(env, model)
 
-    LOGGER.info(f"Running {config['NUM_STEPS']} steps in env...")
+    LOGGER.info(f"Running {env_config['NUM_STEPS']} steps in env...")
 
     # run env_step to get list of transitions
     trajectory_state, transition_scan_list = jax.lax.scan(
-        func_env_step, trajectory_state, None, length=config["NUM_STEPS"]
+        func_env_step, trajectory_state, None, length=env_config["NUM_STEPS"]
     )
     transition_list = create_transition_list_from_transitions(
         transition_scan_list, env.agents
@@ -410,30 +374,52 @@ def make_full_step(
 
 if __name__ == "__main__":
     LOGGER.info("Hello!")
-    key = jax.random.PRNGKey(config["STARTING_KEY"])
+    key = jax.random.PRNGKey(env_config["STARTING_KEY"])
 
     # initialize env
-    env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+    env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
 
-    # initialize model
-    key, key_network = jax.random.split(key, 2)
+    if env_config["CONTINUE"]:
+        key, train_state, starting_epoch = load_train_state(env_config["PREVIOUS_SAVE"])
+        LOGGER.info(
+            f"Using old save from {env_config['PREVIOUS_SAVE']} with starting epoch {starting_epoch}"
+        )
+    else:
+        # initialize model
+        key, key_network = jax.random.split(key, 2)
 
-    model = ActorCritic(
-        key_network, prod(env.observation_space().shape), env.action_space().n
-    )
-    old_model = model
+        model = ActorCritic(
+            key_network,
+            prod(env.observation_space().shape),
+            env.action_space().n,
+            model_config,
+        )
+        old_model = model
 
-    # initialize optim
-    optim = optax.chain(
-        optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-        optax.adam(learning_rate=linear_schedule, eps=1e-5),
-    )
-    # optim = optax.adam(learning_rate=linear_schedule, eps=1e-5)
+        # initialize optim
+        optim = optax.chain(
+            optax.clip_by_global_norm(loss_config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=linear_schedule, eps=1e-5),
+        )
 
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
+        opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
-    train_state = TrainState(model, old_model, optim, opt_state)
+        train_state = TrainState(model, old_model, optim, opt_state)
+        starting_epoch = 0
+        LOGGER.info("Training from scratch.")
 
-    for episode in range(config["NUM_EPISODES"]):
-        LOGGER.info(f"Training episode {episode}")
+    for episode in range(env_config["NUM_EPISODES"]):
+        LOGGER.info(f"Training episode {starting_epoch + episode}")
         train_state, loss_info = make_full_step(key, env, train_state)
+
+    ending_epoch = starting_epoch + env_config["NUM_EPISODES"]
+    LOGGER.info(
+        f"Finished training epochs {starting_epoch} to {ending_epoch}; saving to file {env_config['SAVE_FILE']}"
+    )
+
+    save_train_state(
+        env_config["SAVE_FILE"],
+        key,
+        train_state,
+        ending_epoch,
+    )

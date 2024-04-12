@@ -1,12 +1,60 @@
-from typing import NamedTuple, Dict
-
+import chex
+import distrax
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 import JaxMARL.jaxmarl as jaxmarl
 import JaxMARL.jaxmarl.environments
-import equinox as eqx
 import optax
-import chex
+from typing import NamedTuple, Dict
+
+from src.logger import Logger, LoggingLevel
+
+LOGGER = Logger("types.py", logging_level=LoggingLevel.DEBUG)
+
+
+class ActorCritic(eqx.Module):
+    """Actor Critic class for PPO"""
+
+    actor_layers: []
+    critic_layers: []
+
+    def __init__(self, key: Array, observation_dim: int, action_dim: int, config: dict):
+        LOGGER.info(
+            f"Creating model with key {key}, observation dim {observation_dim}, action dim {action_dim}"
+        )
+        keyx = jax.random.split(key, 10)
+
+        self.actor_layers = [
+            eqx.nn.Linear(observation_dim, 64, key=keyx[0]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 64, key=keyx[1]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, action_dim, key=keyx[2]),
+        ]
+
+        self.critic_layers = [
+            eqx.nn.Linear(observation_dim, 64, key=keyx[3]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 64, key=keyx[4]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 1, key=keyx[5]),
+        ]
+
+    def __call__(self, x: Array) -> (distrax.Categorical, Array):
+        LOGGER.debug(f"Input received with shape {x.shape}")
+        actor_mean = x
+        for actor_layer in self.actor_layers:
+            actor_mean = actor_layer(actor_mean)
+
+        pi = distrax.Categorical(logits=actor_mean)
+
+        critic_output = x
+        for critic_layer in self.critic_layers:
+            critic_output = critic_layer(critic_output)
+
+        return pi, jnp.squeeze(critic_output, axis=-1)
 
 
 class JaxKey(Array):
