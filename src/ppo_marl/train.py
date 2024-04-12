@@ -85,7 +85,6 @@ class ActorCritic(eqx.Module):
 
 def linear_schedule(count) -> float:
     frac = 1.0 - count / config["NUM_EPISODES"]
-    assert 0 <= frac <= 1
     return (
         config["LR"]
         * frac
@@ -273,8 +272,8 @@ def get_actor_loss(
 
 
 def get_loss(
+    model: ActorCritic,  # filter_value_and_grad requires backprop'd object to be first
     trajectory: Trajectory,
-    model: ActorCritic,
     old_model: ActorCritic,
     agent_list: [str],
 ) -> (Float, LossInformation):
@@ -339,6 +338,7 @@ def get_loss(
     return total_loss, LossInformation(actor_loss, critic_loss, entropy_loss)
 
 
+@eqx.filter_jit
 def make_full_step(
     key: Array, env: jaxmarl.environments.MultiAgentEnv, train_state: TrainState
 ) -> (TrainState, LossInformation):
@@ -376,8 +376,6 @@ def make_full_step(
         f"shape of done array is {transition_list[-1].done['agent_1'].shape}"
     )
 
-    assert isinstance(transition_list, list)
-
     LOGGER.debug(f"Transition list is {dtype_as_str(transition_list)}")
 
     # construct trajectory from list of transitions
@@ -390,8 +388,8 @@ def make_full_step(
     LOGGER.debug("Calculating loss...")
 
     # perform backwards steps
-    (loss_info), grads = eqx.filter_value_and_grad(get_loss, has_aux=True)(
-        sampled_trajectory, model, old_model, env.agents
+    loss_info, grads = eqx.filter_value_and_grad(get_loss, has_aux=True)(
+        model, sampled_trajectory, old_model, env.agents
     )
     LOGGER.info(f"Calculated loss: {loss_info}")
 
@@ -430,10 +428,12 @@ if __name__ == "__main__":
         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
         optax.adam(learning_rate=linear_schedule, eps=1e-5),
     )
+    # optim = optax.adam(learning_rate=linear_schedule, eps=1e-5)
 
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
     train_state = TrainState(model, old_model, optim, opt_state)
 
     for episode in range(config["NUM_EPISODES"]):
+        LOGGER.info(f"Training episode {episode}")
         train_state, loss_info = make_full_step(key, env, train_state)

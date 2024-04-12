@@ -18,7 +18,8 @@ LEVELS = {
 
 
 class Logger:
-    """Homebrew logger"""
+    """Homebrew logger.
+    TODO: integrate with Jax callbacks"""
 
     def __init__(
         self,
@@ -33,12 +34,15 @@ class Logger:
     def print_format(self, level: str, message: str):
         preamble = f"[{datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')[:-3]}][{level}] {self.namespace}: "
         if "\n" not in message:
-            print("{:<45} {}".format(preamble, message))
+            print_str = "{:<45} {}".format(preamble, message)
         else:
             messages_split = message.split("\n")
-            print("{:<45} {}".format(preamble, messages_split[0]))
-            for message in messages_split[1:]:
-                print("{:<45} {}".format("  ", message))
+            print_str = "{:<45} {}\n".format(preamble, messages_split[0])
+            print_str += "\n".join(
+                "{:<45} {}".format("  ", message) for message in messages_split[1:]
+            )
+
+        print(print_str)
 
     def debug(self, message: str):
         if LEVELS[LoggingLevel.DEBUG] <= self.logging_level:
