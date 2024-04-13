@@ -34,12 +34,12 @@ class Logger:
     def print_format(self, level: str, message: str):
         preamble = f"[{datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')[:-3]}][{level}] {self.namespace}: "
         if "\n" not in message:
-            print_str = "{:<45} {}".format(preamble, message)
+            print_str = "{:<50} {}".format(preamble, message)
         else:
             messages_split = message.split("\n")
-            print_str = "{:<45} {}\n".format(preamble, messages_split[0])
+            print_str = "{:<50} {}\n".format(preamble, messages_split[0])
             print_str += "\n".join(
-                "{:<45} {}".format("  ", message) for message in messages_split[1:]
+                "{:<50} {}".format("  ", message) for message in messages_split[1:]
             )
 
         print(print_str)

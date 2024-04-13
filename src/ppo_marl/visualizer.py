@@ -16,22 +16,22 @@ import jax
 
 from src.ppo_marl.config import visualizer_config
 from src.ppo_marl.ppo_marl_utils import get_env_step_function, load_train_state
-from src.ppo_marl.ppo_types import TrajectoryState
+from src.ppo_marl.ppo_types import create_trajectory_from_transitions, TrajectoryState
 from src.logger import Logger
 
 LOGGER = Logger("vis.py")
 
 
-def reduce_state(state: OvercookedState) -> OvercookedState:
+def get_state(state: OvercookedState, state_index=0) -> OvercookedState:
     return OvercookedState(
-        state.agent_pos[0],
-        state.agent_dir[0],
-        state.agent_dir_idx[0],
-        state.agent_inv[0],
-        state.goal_pos[0],
-        state.pot_pos[0],
-        state.wall_map[0],
-        state.maze_map[0],
+        state.agent_pos[state_index],
+        state.agent_dir[state_index],
+        state.agent_dir_idx[state_index],
+        state.agent_inv[state_index],
+        state.goal_pos[state_index],
+        state.pot_pos[state_index],
+        state.wall_map[state_index],
+        state.maze_map[state_index],
         state.time,
         state.terminal,
     )
@@ -53,31 +53,44 @@ if __name__ == "__main__":
     # initialize values
     key, key_unsplit = jax.random.split(key)
     key_envs = jax.random.split(
-        key_unsplit, 3
+        key_unsplit, visualizer_config["NUM_ENVS"]
     )  # non-1 num envs to ensure array shaping works
     # reset env
     env_obs, env_state = jax.vmap(env.reset)(key_envs)
 
     trajectory_state = TrajectoryState(key, env_state, env_obs)
 
-    func_env_step = get_env_step_function(env, model, 3, 2)  # 1 env
+    func_env_step = get_env_step_function(
+        env, model, visualizer_config["NUM_ENVS"], 2
+    )  # 1 env
 
     # get list of states
-    state_seq = [reduce_state(trajectory_state.env_state)]
+    state_seq = [trajectory_state.env_state]
     transitions = []
     for i in range(visualizer_config["NUM_STEPS"]):
         trajectory_state, transition = func_env_step(trajectory_state, None)
-        state_seq.append(reduce_state(trajectory_state.env_state))
+        state_seq.append(trajectory_state.env_state)
         transitions.append(transition)
 
     LOGGER.info(f"Saving {len(state_seq)} states")
 
-    with open(f"data/ppo/{model_name}/actions.pkl", "wb") as f:
+    if not os.path.exists(f"data/ppo/{model_name}"):
+        os.mkdir(f"data/ppo/{model_name}")
+
+    with open(f"data/ppo/{model_name}/transitions.pkl", "wb") as f:
         pkl.dump(transitions, f)
 
-    viz = OvercookedVisualizer()
-    viz.animate(
-        state_seq,
-        env.agent_view_size,
-        filename=f"data/ppo/{model_name}/visualization.gif",
+    gif_dir = f"data/ppo/{model_name}/visualizations"
+    if not os.path.exists(gif_dir):
+        os.mkdir(gif_dir)
+    for i in range(visualizer_config["NUM_ENVS"]):
+        viz = OvercookedVisualizer()
+        viz.animate(
+            [get_state(state, i) for state in state_seq],
+            env.agent_view_size,
+            filename=f"{gif_dir}/{i}.gif",
+        )
+
+    LOGGER.info(
+        f"Total reward for agent_1: {create_trajectory_from_transitions(transitions, env.agents).t_reward['agent_1'].sum()}"
     )

@@ -17,7 +17,7 @@ class ActorCritic(eqx.Module):
 
     actor_layers: []
     critic_layers: []
-    LOGGER = Logger("ActorCritic", logging_level=LoggingLevel.DEBUG)
+    LOGGER = Logger("actor_critic", logging_level=LoggingLevel.DEBUG)
 
     def __init__(self, key: Array, observation_dim: int, action_dim: int, config: dict):
         self.LOGGER.info(
@@ -109,6 +109,8 @@ class LossInformation(NamedTuple):
     actor_loss: Float[Array, ""]
     critic_loss: Float[Array, ""]
     entropy_loss: Float[Array, ""]
+    total_reward: Float[Array, ""]  # just a full sum
+    gae: Float[Array, ""]  # reward with decay applied to it
 
 
 def create_trajectory_from_transitions(

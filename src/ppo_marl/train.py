@@ -8,6 +8,7 @@ import sys
 
 sys.path[0] = os.getcwd()
 
+from datetime import datetime
 from math import prod
 from typing import NamedTuple
 
@@ -52,7 +53,9 @@ def linear_schedule(count) -> float:
     )
 
 
-def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "batch"]:
+def calculate_gae(
+    trajectory: Trajectory, agent_list: [str]
+) -> (Float[Array, "batch"], Float[Array, "batch num_steps"]):
     """Given the list of transitions across the trajectory, calculate
     the GAE."""
     t_done_batched = batchify(trajectory.t_done, agent_list, env_config["NUM_ENVS"])
@@ -108,7 +111,9 @@ def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "ba
         # unroll = 16 # num steps. TODO: we already have num_steps as limit. necessary? although this is the num steps from the back.
     )
     LOGGER.debug(f"Computed GAE: {dtype_as_str(gaes)}")
-    return gaes[-1, :]
+
+    # TODO: do we need to reverse this?
+    return gaes[-1, :], gaes.transpose((1, 0))
 
 
 def calculate_model_logprob(
@@ -175,6 +180,18 @@ def get_loss(
     t_model_values_batched = batchify(
         trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
     )
+    t_model_values_nonsqueeze = batchify(
+        trajectory.t_action,
+        agent_list,
+        env_config["NUM_ENVS"],
+        additional_squeeze=False,
+    )
+    t_rewards_batched = batchify(
+        trajectory.t_reward,
+        agent_list,
+        env_config["NUM_ENVS"],
+        additional_squeeze=False,
+    )
 
     LOGGER.debug(
         f"Batchified objects in trajectory: observation {dtype_as_str(t_obs_batched)}, actions {dtype_as_str(t_actions_batched)}, values {dtype_as_str(t_model_values_batched)}"
@@ -190,14 +207,18 @@ def get_loss(
         f"Calculating critic loss from logprob {dtype_as_str(model_logprob)} and value {dtype_as_str(model_value)}..."
     )
 
+    gae, gae_all = calculate_gae(trajectory, agent_list)
+
+    gae_extended = (gae_all + t_model_values_nonsqueeze).flatten()
+
     # calculate critic loss
     clipped_model_value = t_model_values_batched + (
         model_value - t_model_values_batched
     ).clip(-loss_config["CLIP_VAL"], loss_config["CLIP_VAL"])
-    # TODO: what is targets?
-    unclipped_value_loss = jnp.square(t_model_values_batched - model_value)
-    clipped_value_loss = jnp.square(t_model_values_batched - clipped_model_value)
+    unclipped_value_loss = jnp.square(gae_extended - model_value)
+    clipped_value_loss = jnp.square(gae_extended - clipped_model_value)
     # TODO: why the /2?
+    # normalize by env, agents, num steps
     critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
 
     LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
@@ -206,7 +227,7 @@ def get_loss(
 
     # calculate actor loss
     actor_loss = get_actor_loss(
-        calculate_gae(trajectory, agent_list),
+        gae,
         model_logprob,
         calculate_model_logprob(old_model, trajectory, agent_list),
     )
@@ -214,7 +235,7 @@ def get_loss(
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
 
     # entropy
-    entropy_loss = model_pi.entropy().mean()
+    entropy_loss = -model_pi.entropy().mean()
 
     total_loss = (
         loss_config["CRITIC_LOSS"] * critic_loss
@@ -222,7 +243,13 @@ def get_loss(
         + loss_config["ENTROPY_LOSS"] * entropy_loss
     )
 
-    return total_loss, LossInformation(actor_loss, critic_loss, entropy_loss)
+    return total_loss, LossInformation(
+        actor_loss,
+        critic_loss,
+        entropy_loss,
+        t_rewards_batched.sum(),
+        gae.sum(),
+    )
 
 
 @eqx.filter_jit
@@ -301,6 +328,8 @@ def write_loss(writer: SummaryWriter, loss_info: LossInformation) -> None:
     writer.add_scalar("loss/actor_loss", np.asarray(loss_info.actor_loss))
     writer.add_scalar("loss/critic_loss", np.asarray(loss_info.critic_loss))
     writer.add_scalar("loss/entropy_loss", np.asarray(loss_info.entropy_loss))
+    writer.add_scalar("reward/gae", np.asarray(loss_info.gae))
+    writer.add_scalar("reward/total_reward", np.asarray(loss_info.total_reward))
 
 
 if __name__ == "__main__":
@@ -339,7 +368,9 @@ if __name__ == "__main__":
         starting_epoch = 0
         LOGGER.info("Training from scratch.")
 
-    writer = SummaryWriter(env_config["TENSORBOARD_LOGDIR"])
+    writer = SummaryWriter(
+        f"{env_config['TENSORBOARD_LOGDIR']}/{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}"
+    )
 
     # jax.profiler.start_server(env_config["JAX_PROFILER_SERVER"]) # tensorboard server
     # LOGGER.info(f"Starting profiler server. Continue?")
@@ -350,8 +381,13 @@ if __name__ == "__main__":
         train_state, loss_info = make_full_step(key, env, train_state)
         write_loss(writer, loss_info[1])
 
+        if loss_info[1].total_reward.item() > 0:
+            print(f"Non-zero reward on episode {episode}")
+
         if curr_episode % env_config["CKPT_SAVE"] == 0:
-            LOGGER.info(f"Checkpointed episode {starting_epoch + episode}")
+            LOGGER.info(
+                f"Checkpointed episode {starting_epoch + episode} with total loss {np.array(loss_info[0])}, total reward {np.array(loss_info[1].total_reward)}"
+            )
             save_train_state(
                 f'{env_config["SAVE_FILE"]}_{curr_episode}',
                 key,

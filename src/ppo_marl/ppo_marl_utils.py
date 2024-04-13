@@ -26,7 +26,7 @@ def get_env_step_function(
     """Wrap env_step in a returnable function as jax.lax.scan requires all objects
     in the carry state to be jax-able, and the env is not jax-able."""
 
-    LOGGER = Logger("env_step", logging_level=LoggingLevel.INFO)
+    LOGGER = Logger("env_step", logging_level=LoggingLevel.DEBUG)
 
     def env_step(trajectory_state: TrajectoryState, _) -> (Any, Transition):
         """Takes a step in the batch of environments given the model's pi and val for a single step(minibatch).
@@ -145,13 +145,7 @@ def dtype_as_str(x: Any) -> str:
         return dict_as_str(x._asdict())
 
     if isinstance(x, LossInformation):
-        return dict_as_str(
-            {
-                "actor_loss": np.array(x.actor_loss),
-                "critic_loss": np.array(x.critic_loss),
-                "entropy_loss": np.array(x.entropy_loss),
-            }
-        )
+        return dict_as_str({k: np.array(v) for k, v in x._asdict().items()})
 
     if isinstance(x, np.ndarray):
         return str(x)
