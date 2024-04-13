@@ -11,17 +11,16 @@ from typing import NamedTuple, Dict
 
 from src.logger import Logger, LoggingLevel
 
-LOGGER = Logger("types.py", logging_level=LoggingLevel.DEBUG)
-
 
 class ActorCritic(eqx.Module):
     """Actor Critic class for PPO"""
 
     actor_layers: []
     critic_layers: []
+    LOGGER = Logger("ActorCritic", logging_level=LoggingLevel.DEBUG)
 
     def __init__(self, key: Array, observation_dim: int, action_dim: int, config: dict):
-        LOGGER.info(
+        self.LOGGER.info(
             f"Creating model with key {key}, observation dim {observation_dim}, action dim {action_dim}"
         )
         keyx = jax.random.split(key, 10)
@@ -43,7 +42,7 @@ class ActorCritic(eqx.Module):
         ]
 
     def __call__(self, x: Array) -> (distrax.Categorical, Array):
-        LOGGER.debug(f"Input received with shape {x.shape}")
+        self.LOGGER.debug(f"Input received with shape {x.shape}")
         actor_mean = x
         for actor_layer in self.actor_layers:
             actor_mean = actor_layer(actor_mean)

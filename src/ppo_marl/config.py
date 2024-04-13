@@ -23,11 +23,22 @@ env_config = {
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
     "NUM_ENVS": 3,
-    "NUM_EPISODES": 10,
+    "NUM_EPISODES": 100000,
     "NUM_STEPS": 17,  # episode length. value used in walkthrough
     "NUM_AGENTS": 2,
     # checkpointing
     "SAVE_FILE": "src/ppo_marl/ckpt/checkpoint",
-    "CONTINUE": True,
+    "CKPT_SAVE": 10000,
+    "CONTINUE": False,
     "PREVIOUS_SAVE": "src/ppo_marl/ckpt/checkpoint",  # is only used when continue is true
+    # tensorboard
+    "JAX_PROFILER_SERVER": 9999,
+    "TENSORBOARD_LOGDIR": "data/tensorboard/ppo",
+}
+
+visualizer_config = {
+    "ENV_NAME": "overcooked",
+    "ENV_KWARGS": {},
+    "NUM_STEPS": 100,
+    "PREVIOUS_SAVE": "src/ppo_marl/ckpt/checkpoint",
 }

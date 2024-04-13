@@ -44,6 +44,9 @@ class Logger:
 
         print(print_str)
 
+    def set_logging_level(self, new_logging_level: LoggingLevel):
+        self.logging_level = new_logging_level
+
     def debug(self, message: str):
         if LEVELS[LoggingLevel.DEBUG] <= self.logging_level:
             self.print_format("DEBUG", message)

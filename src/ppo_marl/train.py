@@ -9,23 +9,23 @@ import sys
 sys.path[0] = os.getcwd()
 
 from math import prod
-from typing import NamedTuple, Any, Callable
+from typing import NamedTuple
 
+import equinox as eqx
+import JaxMARL.jaxmarl as jaxmarl
+from JaxMARL.jaxmarl.environments.overcooked import overcooked_layouts
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
-import equinox as eqx
-import distrax
 import optax
-import JaxMARL.jaxmarl as jaxmarl
-from JaxMARL.jaxmarl.environments.overcooked import overcooked_layouts
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 from src.ppo_marl.config import model_config, loss_config, env_config
 from src.ppo_marl.ppo_types import (
     ActorCritic,
     LossInformation,
     TrainState,
-    Transition,
     Trajectory,
     TrajectoryState,
     create_trajectory_from_transitions,
@@ -34,8 +34,8 @@ from src.ppo_marl.ppo_types import (
 from src.ppo_marl.ppo_marl_utils import (
     batchify,
     dtype_as_str,
+    get_env_step_function,
     load_train_state,
-    reverse_batchify,
     save_train_state,
 )
 from src.logger import Logger
@@ -50,83 +50,6 @@ def linear_schedule(count) -> float:
         * frac
         / (env_config["NUM_STEPS"] * env_config["NUM_AGENTS"] * env_config["NUM_ENVS"])
     )
-
-
-def get_env_step_function(
-    env: jaxmarl.environments.MultiAgentEnv, model: eqx.Module
-) -> Callable:
-    """Wrap env_step in a returnable function as jax.lax.scan requires all objects
-    in the carry state to be jax-able, and the env is not jax-able."""
-
-    def env_step(trajectory_state: TrajectoryState, _) -> (Any, Transition):
-        """Takes a step in the batch of environments given the model's pi and val for a single step(minibatch).
-        To be used in jax.lax.scan to grab the entire trajectory.
-        Returns shared first arg (trajectory_state) and the transition minibatch"""
-
-        key, env_state, env_obs = trajectory_state
-        agent_list: [str] = env_obs.keys()
-
-        # get env_obs as array
-        env_obs_array = batchify(env_obs, agent_list, env_config["NUM_ENVS"])
-
-        # predictions for this current state
-        model_output = jax.vmap(model)(env_obs_array)
-        model_pi: distrax.Categorical = model_output[0]
-        model_value: Array = model_output[1]
-        LOGGER.debug(
-            f"Pi minibatch has num categories {model_pi.num_categories}, "
-            f"Value has shape {model_value.shape}"
-        )
-
-        # sample from pi
-        key, key_action = jax.random.split(key, 2)
-        action, log_prob = model_pi.sample_and_log_prob(seed=key_action)
-        # put actions into a dictionary with agent name as str and flatten the action array
-        # from (num_envs, 1) -> (num_envs,)
-        action_unbatch = {
-            k: v.flatten()
-            for k, v in reverse_batchify(
-                action, agent_list, env_config["NUM_ENVS"]
-            ).items()
-        }
-
-        LOGGER.debug(
-            f"Action was chosen with shapes {dtype_as_str(action_unbatch)}\n"
-            f"Log prob was calculated with shapes {dtype_as_str(log_prob)}"
-        )
-
-        # apply action to env
-        key, key_env_unsplit = jax.random.split(key, 2)
-        key_env = jax.random.split(key_env_unsplit, env_config["NUM_ENVS"])
-
-        obs_batch, env_state, reward, done, info = jax.vmap(
-            env.step, in_axes=(0, 0, 0)
-        )(key_env, env_state, action_unbatch)
-        LOGGER.debug(
-            f"Observations have shape: {dtype_as_str(obs_batch)}\n"
-            f"Reward has shape: {dtype_as_str(reward)}\n"
-            f"Done has shape: {dtype_as_str(done)}\n"
-            f"Info is: {info}"
-        )
-
-        info = jax.tree.map(lambda x: x.reshape((env_config["NUM_AGENTS"])), info)
-        LOGGER.debug(f"Transformed info into {info}")
-
-        transition = Transition(
-            done,
-            action_unbatch,
-            reward,
-            obs_batch,
-            info,
-            model_value,
-            log_prob,
-        )
-
-        new_trajectory_state = TrajectoryState(key, env_state, obs_batch)
-
-        return new_trajectory_state, transition
-
-    return env_step
 
 
 def calculate_gae(trajectory: Trajectory, agent_list: [str]) -> Float[Array, "batch"]:
@@ -305,7 +228,7 @@ def get_loss(
 @eqx.filter_jit
 def make_full_step(
     key: Array, env: jaxmarl.environments.MultiAgentEnv, train_state: TrainState
-) -> (TrainState, LossInformation):
+) -> (TrainState, (Float[Array, ""], LossInformation)):
     """Given a train state, make a full step.
     Return a train_state with aux info such as loss values"""
     # extract values from train_state
@@ -322,7 +245,9 @@ def make_full_step(
 
     trajectory_state = TrajectoryState(key, env_state, obs)
 
-    func_env_step = get_env_step_function(env, model)
+    func_env_step = get_env_step_function(
+        env, model, env_config["NUM_ENVS"], env_config["NUM_AGENTS"]
+    )
 
     LOGGER.info(f"Running {env_config['NUM_STEPS']} steps in env...")
 
@@ -355,7 +280,7 @@ def make_full_step(
     loss_info, grads = eqx.filter_value_and_grad(get_loss, has_aux=True)(
         model, sampled_trajectory, old_model, env.agents
     )
-    LOGGER.info(f"Calculated loss: {loss_info}")
+    LOGGER.info(f"Calculated loss: {loss_info[0]}")
 
     LOGGER.debug("Calculating optimizer update")
     # TODO: get opt_state typing
@@ -370,6 +295,12 @@ def make_full_step(
     )
 
     return new_train_state, loss_info
+
+
+def write_loss(writer: SummaryWriter, loss_info: LossInformation) -> None:
+    writer.add_scalar("loss/actor_loss", np.asarray(loss_info.actor_loss))
+    writer.add_scalar("loss/critic_loss", np.asarray(loss_info.critic_loss))
+    writer.add_scalar("loss/entropy_loss", np.asarray(loss_info.entropy_loss))
 
 
 if __name__ == "__main__":
@@ -408,9 +339,25 @@ if __name__ == "__main__":
         starting_epoch = 0
         LOGGER.info("Training from scratch.")
 
+    writer = SummaryWriter(env_config["TENSORBOARD_LOGDIR"])
+
+    # jax.profiler.start_server(env_config["JAX_PROFILER_SERVER"]) # tensorboard server
+    # LOGGER.info(f"Starting profiler server. Continue?")
+    # input()
+
     for episode in range(env_config["NUM_EPISODES"]):
-        LOGGER.info(f"Training episode {starting_epoch + episode}")
+        curr_episode = starting_epoch + episode
         train_state, loss_info = make_full_step(key, env, train_state)
+        write_loss(writer, loss_info[1])
+
+        if curr_episode % env_config["CKPT_SAVE"] == 0:
+            LOGGER.info(f"Checkpointed episode {starting_epoch + episode}")
+            save_train_state(
+                f'{env_config["SAVE_FILE"]}_{curr_episode}',
+                key,
+                train_state,
+                curr_episode,
+            )
 
     ending_epoch = starting_epoch + env_config["NUM_EPISODES"]
     LOGGER.info(
