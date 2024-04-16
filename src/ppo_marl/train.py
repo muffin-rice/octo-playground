@@ -148,7 +148,7 @@ def get_actor_loss(
     new_log_prob: Float[Array, "batch"],
     old_log_prob: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    ratio = (new_log_prob / old_log_prob).reshape(
+    ratio = (new_log_prob - old_log_prob).reshape(
         env_config["NUM_ENVS"] * env_config["NUM_AGENTS"], env_config["NUM_STEPS"]
     )
     clipped_ratio = jnp.clip(
@@ -235,12 +235,12 @@ def get_loss(
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
 
     # entropy
-    entropy_loss = -model_pi.entropy().mean()
+    entropy_loss = model_pi.entropy().mean()
 
     total_loss = (
         loss_config["CRITIC_LOSS"] * critic_loss
         + loss_config["ACTOR_LOSS"] * actor_loss
-        + loss_config["ENTROPY_LOSS"] * entropy_loss
+        - loss_config["ENTROPY_LOSS"] * entropy_loss
     )
 
     return total_loss, LossInformation(
@@ -273,7 +273,11 @@ def make_full_step(
     trajectory_state = TrajectoryState(key, env_state, obs)
 
     func_env_step = get_env_step_function(
-        env, model, env_config["NUM_ENVS"], env_config["NUM_AGENTS"]
+        env,
+        model,
+        env_config["NUM_ENVS"],
+        env_config["NUM_AGENTS"],
+        env_config["ZERO_REWARD"],
     )
 
     LOGGER.info(f"Running {env_config['NUM_STEPS']} steps in env...")
@@ -359,7 +363,8 @@ if __name__ == "__main__":
         # initialize optim
         optim = optax.chain(
             optax.clip_by_global_norm(loss_config["MAX_GRAD_NORM"]),
-            optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            # optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            optax.adam(learning_rate=loss_config["LR"], eps=1e-5),
         )
 
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
@@ -377,12 +382,15 @@ if __name__ == "__main__":
     # input()
 
     for episode in range(env_config["NUM_EPISODES"]):
+        key, key_step = jax.random.split(key, 2)
         curr_episode = starting_epoch + episode
-        train_state, loss_info = make_full_step(key, env, train_state)
+        train_state, loss_info = make_full_step(key_step, env, train_state)
         write_loss(writer, loss_info[1])
 
         if loss_info[1].total_reward.item() > 0:
-            print(f"Non-zero reward on episode {episode}")
+            LOGGER.info(
+                f"Non-zero reward on episode {episode}: {loss_info[1].total_reward.item()}"
+            )
 
         if curr_episode % env_config["CKPT_SAVE"] == 0:
             LOGGER.info(
@@ -390,7 +398,7 @@ if __name__ == "__main__":
             )
             save_train_state(
                 f'{env_config["SAVE_FILE"]}_{curr_episode}',
-                key,
+                key_step,
                 train_state,
                 curr_episode,
             )

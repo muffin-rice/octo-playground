@@ -12,7 +12,7 @@ loss_config = {
     # loss coefficients
     "ACTOR_LOSS": 1,  # value used in walkthrough
     "CRITIC_LOSS": 0.5,  # value used in walkthrough
-    "ENTROPY_LOSS": 0.05,  # value used in walkthrough
+    "ENTROPY_LOSS": 0.01,
 }
 
 env_config = {
@@ -22,10 +22,11 @@ env_config = {
     "ENV_NAME": "overcooked",
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
-    "NUM_ENVS": 128,
+    "NUM_ENVS": 64,
     "NUM_EPISODES": 20000,
-    "NUM_STEPS": 100,  # episode length
+    "NUM_STEPS": 300,  # episode length
     "NUM_AGENTS": 2,
+    "ZERO_REWARD": 0,  # negative reward when reward is 0
     # checkpointing
     "SAVE_FILE": "src/ppo_marl/ckpt/test",
     "CKPT_SAVE": 100,
@@ -41,5 +42,5 @@ visualizer_config = {
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_marl/ckpt/test_500",
+    "PREVIOUS_SAVE": "src/ppo_marl/ckpt/test_2400",
 }

@@ -61,7 +61,7 @@ if __name__ == "__main__":
     trajectory_state = TrajectoryState(key, env_state, env_obs)
 
     func_env_step = get_env_step_function(
-        env, model, visualizer_config["NUM_ENVS"], 2
+        env, model, visualizer_config["NUM_ENVS"], 2, 0
     )  # 1 env
 
     # get list of states

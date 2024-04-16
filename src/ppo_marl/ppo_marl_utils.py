@@ -21,7 +21,11 @@ from src.logger import Logger, LoggingLevel
 
 
 def get_env_step_function(
-    env: jaxmarl.environments.MultiAgentEnv, model: eqx.Module, num_envs, num_agents
+    env: jaxmarl.environments.MultiAgentEnv,
+    model: eqx.Module,
+    num_envs: int,
+    num_agents: int,
+    zero_reward: float,
 ) -> Callable:
     """Wrap env_step in a returnable function as jax.lax.scan requires all objects
     in the carry state to be jax-able, and the env is not jax-able."""
@@ -70,6 +74,7 @@ def get_env_step_function(
         obs_batch, env_state, reward, done, info = jax.vmap(
             env.step, in_axes=(0, 0, 0)
         )(key_env, env_state, action_unbatch)
+        reward = {k: v - zero_reward for k, v in reward.items()}
         LOGGER.debug(
             f"Observations have shape: {dtype_as_str(obs_batch)}\n"
             f"Reward has shape: {dtype_as_str(reward)}\n"
