@@ -3,14 +3,13 @@ from typing import Any, Callable, Dict
 
 import distrax
 import equinox as eqx
-import JaxMARL.jaxmarl as jaxmarl
-import JaxMARL.jaxmarl.environments
+import gymnax
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, UInt32
 import numpy as np
 
-from src.ppo_marl.ppo_types import (
+from src.ppo_rl.ppo_types import (
     LossInformation,
     Trajectory,
     Transition,
@@ -21,27 +20,23 @@ from src.logger import Logger, LoggingLevel
 
 
 def get_env_step_function(
-    env: jaxmarl.environments.MultiAgentEnv,
+    env_with_params: (gymnax.environments.environment.Environment, gymnax.EnvParams),
     model: eqx.Module,
     num_envs: int,
-    num_agents: int,
     zero_reward: float,
 ) -> Callable:
     """Wrap env_step in a returnable function as jax.lax.scan requires all objects
     in the carry state to be jax-able, and the env is not jax-able."""
 
     LOGGER = Logger("env_step", logging_level=LoggingLevel.DEBUG)
+    env, env_params = env_with_params
 
     def env_step(trajectory_state: TrajectoryState, _) -> (Any, Transition):
         """Takes a step in the batch of environments given the model's pi and val for a single step(minibatch).
         To be used in jax.lax.scan to grab the entire trajectory.
         Returns shared first arg (trajectory_state) and the transition minibatch"""
 
-        key, env_state, env_obs = trajectory_state
-        agent_list: [str] = env_obs.keys()
-
-        # get env_obs as array
-        env_obs_array = batchify(env_obs, agent_list, num_envs)
+        key, env_state, env_obs_array = trajectory_state
 
         # predictions for this current state
         model_output = jax.vmap(model)(env_obs_array)
@@ -55,15 +50,9 @@ def get_env_step_function(
         # sample from pi
         key, key_action = jax.random.split(key, 2)
         action, log_prob = model_pi.sample_and_log_prob(seed=key_action)
-        # put actions into a dictionary with agent name as str and flatten the action array
-        # from (num_envs, 1) -> (num_envs,)
-        action_unbatch = {
-            k: v.flatten()
-            for k, v in reverse_batchify(action, agent_list, num_envs).items()
-        }
 
         LOGGER.debug(
-            f"Action was chosen with shapes {dtype_as_str(action_unbatch)}\n"
+            f"Action was chosen with shapes {dtype_as_str(action)}\n"
             f"Log prob was calculated with shapes {dtype_as_str(log_prob)}"
         )
 
@@ -72,9 +61,9 @@ def get_env_step_function(
         key_env = jax.random.split(key_env_unsplit, num_envs)
 
         obs_batch, env_state, reward, done, info = jax.vmap(
-            env.step, in_axes=(0, 0, 0)
-        )(key_env, env_state, action_unbatch)
-        reward = {k: v - zero_reward for k, v in reward.items()}
+            env.step, in_axes=(0, 0, 0, None)
+        )(key_env, env_state, action, env_params)
+        reward -= zero_reward
         LOGGER.debug(
             f"Observations have shape: {dtype_as_str(obs_batch)}\n"
             f"Reward has shape: {dtype_as_str(reward)}\n"
@@ -82,12 +71,9 @@ def get_env_step_function(
             f"Info is: {info}"
         )
 
-        info = jax.tree.map(lambda x: x.reshape((num_agents)), info)
-        LOGGER.debug(f"Transformed info into {info}")
-
         transition = Transition(
             done,
-            action_unbatch,
+            action,
             reward,
             obs_batch,
             info,
@@ -102,38 +88,11 @@ def get_env_step_function(
     return env_step
 
 
-def batchify(
-    env_attr: dict, agent_list: [str], num_envs: int, additional_squeeze: bool = False
-) -> Float[Array, ""]:
-    """JaxMARL envs have attributes agent_id: array. Unpack this dictionary
-    into an array to be completely vectorized"""
-    # make arr num_agents x num_envs x (optional if trajectory) x (dtype)
-    env_attr_array = jnp.stack([env_attr[agent] for agent in agent_list])
-
-    if (
-        additional_squeeze
-    ):  # if we want to squeeze one additional dim, eg. (optional if trajectory)
-        return env_attr_array.reshape(
-            (len(agent_list) * num_envs * env_attr_array.shape[2], -1)
-        )
-    else:
-        return env_attr_array.reshape((len(agent_list) * num_envs, -1))
-
-
-def reverse_batchify(
-    env_attr_array: Float[Array, ""], agent_list: [str], num_envs: int
-):
-    """Reverse of batchify. However, expressiveness is somewhat lost in the array as
-    it collapses all dims into one."""
-    env_attr_array = env_attr_array.reshape((len(agent_list), num_envs, -1))
-    return {agent: env_attr_array[i] for i, agent in enumerate(agent_list)}
-
-
 def dtype_as_str(x: Any) -> str:
     if isinstance(x, Array):
         return f"shape {x.shape} dtype {x.dtype}"
 
-    if isinstance(x, JaxMARL.jaxmarl.environments.overcooked.overcooked.State):
+    if isinstance(x, gymnax.EnvState):
         return dict_as_str(x.__dict__)
 
     if isinstance(x, dict):

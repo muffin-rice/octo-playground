@@ -13,8 +13,7 @@ from math import prod
 from typing import NamedTuple
 
 import equinox as eqx
-import JaxMARL.jaxmarl as jaxmarl
-from JaxMARL.jaxmarl.environments.overcooked import overcooked_layouts
+import gymnax
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -22,8 +21,8 @@ import optax
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from src.ppo_marl.config import model_config, loss_config, env_config
-from src.ppo_marl.ppo_types import (
+from src.ppo_rl.config import model_config, loss_config, env_config
+from src.ppo_rl.ppo_types import (
     ActorCritic,
     LossInformation,
     TrainState,
@@ -32,8 +31,7 @@ from src.ppo_marl.ppo_types import (
     create_trajectory_from_transitions,
     create_transition_list_from_transitions,
 )
-from src.ppo_marl.ppo_marl_utils import (
-    batchify,
+from src.ppo_rl.ppo_utils import (
     dtype_as_str,
     get_env_step_function,
     load_train_state,
@@ -46,18 +44,15 @@ LOGGER = Logger("train.py")
 
 def linear_schedule(count) -> float:
     frac = 1.0 - count / env_config["NUM_EPISODES"]
-    return (
-        loss_config["LR"] * frac / (env_config["NUM_AGENTS"] * env_config["NUM_ENVS"])
-    )
+    return loss_config["LR"] * frac
 
 
 def calculate_gae(
-    trajectory: Trajectory, agent_list: [str]
+    trajectory: Trajectory,
 ) -> (Float[Array, "batch"], Float[Array, "batch num_steps"]):
     """Given the list of transitions across the trajectory, calculate
     the GAE."""
-    t_done_batched = batchify(trajectory.t_done, agent_list, env_config["NUM_ENVS"])
-    t_reward_batched = batchify(trajectory.t_reward, agent_list, env_config["NUM_ENVS"])
+    t_done_batched, t_reward_batched = trajectory.t_done, trajectory.t_reward
 
     LOGGER.info(
         f"Batched trajectory done and reward: {dtype_as_str(t_done_batched)} {dtype_as_str(t_reward_batched)}"
@@ -119,15 +114,10 @@ def calculate_gae(
 def calculate_model_logprob(
     model: ActorCritic,
     trajectory: Trajectory,
-    agent_list: str,
 ) -> Float[Array, "batch"]:
     """Given old actor/critic, generate logprob for given trajectory batch."""
-    t_obs_batched = batchify(
-        trajectory.t_obs, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
-    )
-    t_action_batched = batchify(
-        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
-    )
+    t_obs_batched = trajectory.t_obs.reshape(-1, trajectory.t_obs.shape[2])
+    t_action_batched = trajectory.t_action.reshape(-1, 1)
 
     # logits (not logged) for each step, each batch
     model_pi, model_value = jax.vmap(model)(t_obs_batched)
@@ -149,7 +139,7 @@ def get_actor_loss(
     old_log_prob: Float[Array, "batch"],
 ) -> Float[Array, ""]:
     ratio = (new_log_prob - old_log_prob).reshape(
-        env_config["NUM_ENVS"] * env_config["NUM_AGENTS"], env_config["NUM_STEPS"]
+        env_config["NUM_ENVS"], env_config["NUM_STEPS"]
     )
     clipped_ratio = jnp.clip(
         ratio, 1.0 - loss_config["CLIP_EPS"], 1.0 + loss_config["CLIP_EPS"]
@@ -167,31 +157,14 @@ def get_loss(
     model: ActorCritic,  # filter_value_and_grad requires backprop'd object to be first
     trajectory: Trajectory,
     old_model: ActorCritic,
-    agent_list: [str],
 ) -> (Float, LossInformation):
     """Compute loss of entire trajectory"""
     # first batch out the trajectory
-    t_obs_batched = batchify(
-        trajectory.t_obs, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
-    )
-    t_actions_batched = batchify(
-        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
-    )
-    t_model_values_batched = batchify(
-        trajectory.t_action, agent_list, env_config["NUM_ENVS"], additional_squeeze=True
-    )
-    t_model_values_nonsqueeze = batchify(
-        trajectory.t_action,
-        agent_list,
-        env_config["NUM_ENVS"],
-        additional_squeeze=False,
-    )
-    t_rewards_batched = batchify(
-        trajectory.t_reward,
-        agent_list,
-        env_config["NUM_ENVS"],
-        additional_squeeze=False,
-    )
+    t_obs_batched = trajectory.t_obs.reshape(-1, trajectory.t_obs.shape[2])
+    t_actions_batched = trajectory.t_action.reshape(-1, 1)
+    t_model_values_unbatched = trajectory.t_model_value
+    t_model_values_batched = trajectory.t_model_value.reshape(-1, 1)
+    t_rewards_batched = trajectory.t_reward.reshape(-1, 1)
 
     LOGGER.debug(
         f"Batchified objects in trajectory: observation {dtype_as_str(t_obs_batched)}, actions {dtype_as_str(t_actions_batched)}, values {dtype_as_str(t_model_values_batched)}"
@@ -207,9 +180,9 @@ def get_loss(
         f"Calculating critic loss from logprob {dtype_as_str(model_logprob)} and value {dtype_as_str(model_value)}..."
     )
 
-    gae, gae_all = calculate_gae(trajectory, agent_list)
+    gae, gae_all = calculate_gae(trajectory)
 
-    gae_extended = (gae_all + t_model_values_nonsqueeze).flatten()
+    gae_extended = (gae_all + t_model_values_unbatched).flatten()
 
     # calculate critic loss
     clipped_model_value = t_model_values_batched + (
@@ -218,7 +191,7 @@ def get_loss(
     unclipped_value_loss = jnp.square(gae_extended - model_value)
     clipped_value_loss = jnp.square(gae_extended - clipped_model_value)
     # TODO: why the /2?
-    # normalize by env, agents, num steps
+    # normalize by env, num steps
     critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
 
     LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
@@ -229,7 +202,7 @@ def get_loss(
     actor_loss = get_actor_loss(
         gae,
         model_logprob,
-        calculate_model_logprob(old_model, trajectory, agent_list),
+        calculate_model_logprob(old_model, trajectory),
     )
 
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
@@ -254,10 +227,14 @@ def get_loss(
 
 @eqx.filter_jit
 def make_full_step(
-    key: Array, env: jaxmarl.environments.MultiAgentEnv, train_state: TrainState
+    key: Array,
+    env_with_params: (gymnax.environments.environment.Environment, gymnax.EnvParams),
+    train_state: TrainState,
 ) -> (TrainState, (Float[Array, ""], LossInformation)):
     """Given a train state, make a full step.
     Return a train_state with aux info such as loss values"""
+    env, env_params = env_with_params
+
     # extract values from train_state
     model, old_model, optim, opt_state = train_state
 
@@ -265,7 +242,7 @@ def make_full_step(
     key, key_unsplit = jax.random.split(key)
     key_envs = jax.random.split(key_unsplit, env_config["NUM_ENVS"])
     # reset env
-    obs, env_state = jax.vmap(env.reset)(key_envs)
+    obs, env_state = jax.vmap(env.reset, in_axes=(0, None))(key_envs, env_params)
     LOGGER.info(
         f"Finished reset. Observation: {dtype_as_str(obs)}\nEnv State: {dtype_as_str(env_state)}"
     )
@@ -273,33 +250,26 @@ def make_full_step(
     trajectory_state = TrajectoryState(key, env_state, obs)
 
     func_env_step = get_env_step_function(
-        env,
-        model,
-        env_config["NUM_ENVS"],
-        env_config["NUM_AGENTS"],
-        env_config["ZERO_REWARD"],
+        env_with_params, model, env_config["NUM_ENVS"], env_config["ZERO_REWARD"]
     )
 
     LOGGER.info(f"Running {env_config['NUM_STEPS']} steps in env...")
 
-    # run env_step to get list of transitions
     trajectory_state, transition_scan_list = jax.lax.scan(
         func_env_step, trajectory_state, None, length=env_config["NUM_STEPS"]
     )
-    transition_list = create_transition_list_from_transitions(
-        transition_scan_list, env.agents
-    )
+    transition_list = create_transition_list_from_transitions(transition_scan_list)
 
     LOGGER.info(
         f"Completed trajectory with transition list length {len(transition_list)}. "
         f"State timestamps across envs are {trajectory_state.env_state.time} and "
-        f"shape of done array is {transition_list[-1].done['agent_1'].shape}"
+        f"shape of done array is {transition_list[-1].done.shape}"
     )
 
     LOGGER.debug(f"Transition list is {dtype_as_str(transition_list)}")
 
     # construct trajectory from list of transitions
-    sampled_trajectory = create_trajectory_from_transitions(transition_list, env.agents)
+    sampled_trajectory = create_trajectory_from_transitions(transition_list)
 
     LOGGER.debug(
         f"Created trajectory from transition list: {dtype_as_str(sampled_trajectory)}"
@@ -309,7 +279,7 @@ def make_full_step(
 
     # perform backwards steps
     loss_info, grads = eqx.filter_value_and_grad(get_loss, has_aux=True)(
-        model, sampled_trajectory, old_model, env.agents
+        model, sampled_trajectory, old_model
     )
     LOGGER.info(f"Calculated loss: {loss_info[0]}")
 
@@ -341,7 +311,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(env_config["STARTING_KEY"])
 
     # initialize env
-    env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
+    env, env_params = gymnax.make(env_config["ENV_NAME"])
 
     if env_config["CONTINUE"]:
         key, train_state, starting_epoch = load_train_state(env_config["PREVIOUS_SAVE"])
@@ -354,17 +324,15 @@ if __name__ == "__main__":
 
         model = ActorCritic(
             key_network,
-            prod(env.observation_space().shape),
-            env.action_space().n,
+            prod(env.observation_space(env_params).shape),
+            env.action_space(env_params).n,
             model_config,
         )
         old_model = model
 
-        # initialize optim
         optim = optax.chain(
             optax.clip_by_global_norm(loss_config["MAX_GRAD_NORM"]),
             optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            # optax.adam(learning_rate=loss_config["LR"], eps=1e-5),
         )
 
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
@@ -384,10 +352,15 @@ if __name__ == "__main__":
     for episode in range(env_config["NUM_EPISODES"]):
         key, key_step = jax.random.split(key, 2)
         curr_episode = starting_epoch + episode
-        train_state, loss_info = make_full_step(key_step, env, train_state)
+        train_state, loss_info = make_full_step(
+            key_step, (env, env_params), train_state
+        )
         write_loss(writer, loss_info[1])
 
-        if loss_info[1].total_reward.item() > 0:
+        if (
+            loss_info[1].total_reward.item()
+            > -env_config["NUM_STEPS"] * env_config["NUM_ENVS"]
+        ):
             LOGGER.info(
                 f"Non-zero reward on episode {episode}: {loss_info[1].total_reward.item()}"
             )

@@ -19,28 +19,27 @@ env_config = {
     "metadata": "surprise!",
     # env coefficients
     "STARTING_KEY": 0,
-    "ENV_NAME": "overcooked",
+    "ENV_NAME": "MountainCar-v0",
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
     "NUM_EPISODES": 50000,
     "NUM_STEPS": 200,  # episode length
-    "NUM_AGENTS": 2,
     "ZERO_REWARD": 0,  # negative reward when reward is 0
     # checkpointing
-    "SAVE_FILE": "src/ppo_marl/ckpt/test",
+    "SAVE_FILE": "src/ppo_rl/ckpt/test",
     "CKPT_SAVE": 100,
     "CONTINUE": False,
-    "PREVIOUS_SAVE": "src/ppo_marl/ckpt/test",  # is only used when continue is true
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test",  # is only used when continue is true
     # tensorboard
     "JAX_PROFILER_SERVER": 9999,
-    "TENSORBOARD_LOGDIR": "data/tensorboard/ppo",
+    "TENSORBOARD_LOGDIR": "data/tensorboard/ppo_rl",
 }
 
 visualizer_config = {
-    "ENV_NAME": "overcooked",
+    "ENV_NAME": "MountainCar-v0",
     "ENV_KWARGS": {},
-    "NUM_ENVS": 64,
+    "NUM_ENVS": 5,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_marl/ckpt/test_15000",
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_1000",
 }
