@@ -12,16 +12,18 @@ import pickle as pkl
 sys.path[0] = os.getcwd()
 
 import gymnax
-from gymnash.gymnax.visualize import Visualizer
 import jax
+import jax.numpy as jnp
 
 from src.ppo_rl.config import visualizer_config
 from src.ppo_rl.ppo_utils import get_env_step_function, load_train_state
 from src.ppo_rl.ppo_types import (
     create_trajectory_from_transitions,
+    Trajectory,
     TrajectoryState,
     Transition,
 )
+from src.ppo_rl.train import get_actor_loss, get_critic_loss, calculate_gae, get_loss
 from src.logger import Logger
 
 LOGGER = Logger("vis.py")
@@ -41,6 +43,22 @@ def get_state(state: EnvState, state_index=0) -> EnvState:
         state.velocity[state_index],
         state.time[state_index],
     )
+
+def stats_for_model(transition_list: [Transition], env_index = 0):
+    LOGGER.info(f"Printing transition stats for environment {env_index}")
+    _, gaes_per_timestamp = calculate_gae(create_trajectory_from_transitions(transition_list))
+    for step_number, transition in enumerate(transition_list):
+        chosen_action = transition.action[env_index]
+        logprob = jnp.exp(transition.log_prob[env_index])
+        action_value = transition.model_value[env_index]
+        reward = transition.reward[env_index]
+        done = transition.reward[env_index]
+        gae = gaes_per_timestamp[step_number, env_index]
+
+        LOGGER.info(f"For timestamp {step_number}, action {chosen_action} was chosen with probability {logprob}.\n"
+                    f"Value calculated as {action_value}, gae is {gae}, reward is {reward}.\n"
+                    f"Done is {done}")
+
 
 
 if __name__ == "__main__":
@@ -79,6 +97,8 @@ if __name__ == "__main__":
         trajectory_state, transition = func_env_step(trajectory_state, None)
         state_seq.append(trajectory_state.env_state)
         transitions.append(transition)
+
+    stats_for_model(transitions)
 
     LOGGER.info(f"Saving {len(state_seq)} states")
 

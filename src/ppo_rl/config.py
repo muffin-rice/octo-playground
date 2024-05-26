@@ -24,7 +24,7 @@ env_config = {
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
     "NUM_EPISODES": 50000,
-    "NUM_STEPS": 200,  # episode length
+    "NUM_STEPS": 300,  # episode length
     "ZERO_REWARD": 0,  # negative reward when reward is 0
     # checkpointing
     "SAVE_FILE": "src/ppo_rl/ckpt/test",
@@ -41,5 +41,5 @@ visualizer_config = {
     "ENV_KWARGS": {},
     "NUM_ENVS": 5,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_1000",
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_43700",
 }

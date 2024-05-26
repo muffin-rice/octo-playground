@@ -105,9 +105,8 @@ def calculate_gae(
     )
     LOGGER.debug(f"Computed GAE: {dtype_as_str(gaes)}")
 
-    # TODO: do we need to reverse this?
-    last_gae = gaes[-1, :]
-    gaes_normalized = (last_gae - last_gae.mean()) / (last_gae.std() + 1e-8)
+    overall_gae = gaes[0, :]
+    gaes_normalized = (overall_gae - overall_gae.mean()) / (overall_gae.std() + 1e-8)
     return gaes_normalized, gaes.transpose((1, 0))
 
 
@@ -131,6 +130,24 @@ def calculate_model_logprob(
     )
 
     return model_logprobs
+
+def get_critic_loss(
+    gae_per_timestamp: Float[Array, "num_envs d"],
+    batched_values: Float[Array, "num_envs d"],
+    curr_value: Float[Array, "num_envs d"]
+) -> Float[Array, ""]:
+    gae_extended = gae_per_timestamp.flatten()
+
+    return (curr_value - gae_extended).mean() / 2
+
+    # # calculate critic loss
+    # clipped_model_value = t_model_values_batched + (
+    #     model_value - t_model_values_batched
+    # ).clip(-loss_config["CLIP_VAL"], loss_config["CLIP_VAL"])
+    # unclipped_value_loss = jnp.square(gae_extended - model_value)
+    # clipped_value_loss = jnp.square(gae_extended - clipped_model_value)
+    # # normalize by env, num steps
+    # critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
 
 
 def get_actor_loss(
@@ -182,17 +199,8 @@ def get_loss(
 
     gae, gae_all = calculate_gae(trajectory)
 
-    gae_extended = (gae_all + t_model_values_unbatched).flatten()
-
     # calculate critic loss
-    clipped_model_value = t_model_values_batched + (
-        model_value - t_model_values_batched
-    ).clip(-loss_config["CLIP_VAL"], loss_config["CLIP_VAL"])
-    unclipped_value_loss = jnp.square(gae_extended - model_value)
-    clipped_value_loss = jnp.square(gae_extended - clipped_model_value)
-    # TODO: why the /2?
-    # normalize by env, num steps
-    critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
+    critic_loss = get_critic_loss(gae_all, t_model_values_unbatched, model_value)
 
     LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
 

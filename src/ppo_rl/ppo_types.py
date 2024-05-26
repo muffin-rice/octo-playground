@@ -70,7 +70,7 @@ class Transition(NamedTuple):
     info: {}
     # model info
     model_value: Float[Array, "num_envs"]
-    log_prob: Float[Array, "num_envs action_dim"]
+    log_prob: Float[Array, "num_envs"]
 
 
 class Trajectory(NamedTuple):
@@ -82,7 +82,7 @@ class Trajectory(NamedTuple):
     t_obs: Float[Array, "num_envs d obs_dim"]
     # model info
     t_model_value: Float[Array, "num_envs d"]
-    t_log_prob: Float[Array, "num_envs d action_dim"]
+    t_log_prob: Float[Array, "num_envs d"]
 
 
 class TrajectoryState(NamedTuple):
