@@ -47,6 +47,9 @@ def get_state(state: EnvState, state_index=0) -> EnvState:
 
 def stats_for_model(transition_list: [Transition], env_index=0):
     LOGGER.info(f"Printing transition stats for environment {env_index}")
+    LOGGER.info(
+        f"Total reward for env {env_index} is {create_trajectory_from_transitions(transition_list).t_reward[env_index, :].sum()}"
+    )
     _, gaes_per_timestamp = calculate_gae(
         create_trajectory_from_transitions(transition_list)
     )
@@ -65,10 +68,8 @@ def stats_for_model(transition_list: [Transition], env_index=0):
         )
 
         if done:
-            LOGGER.info(
-                f"Timestamp {step_number} is marked as the terminating timestamp"
-            )
-            return
+            LOGGER.info(f"Timestamp {step_number} is marked as a terminating timestamp")
+            yield()
 
 
 if __name__ == "__main__":
@@ -113,8 +114,6 @@ if __name__ == "__main__":
         state_seq.append(trajectory_state.env_state)
         transitions.append(transition)
 
-    stats_for_model(transitions)
-
     LOGGER.info(f"Saving {len(state_seq)} states")
 
     if not os.path.exists(f"data/ppo/{model_name}"):
@@ -128,13 +127,17 @@ if __name__ == "__main__":
         os.mkdir(gif_dir)
 
     for env_number in range(visualizer_config["NUM_ENVS"]):
+        input("Continue? ")
+        log_generator = stats_for_model(transitions, env_number)
         env = gym.make(visualizer_config["ENV_NAME"], render_mode="human")
         observation, info = env.reset()
 
         for transition in transitions:
             env.step(transition.action[env_number].item())
             if transition.done[env_number]:
-                break
+                next(log_generator)
+                input("Continue? ")
+                env.reset()
 
         env.close()
 

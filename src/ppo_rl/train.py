@@ -135,9 +135,8 @@ def get_critic_loss(
     gae_per_timestamp: Float[Array, "num_envs d"],
     batched_values: Float[Array, "num_envs d"],
     curr_value: Float[Array, "num_envs d"],
-    batched_done: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    gae_extended = gae_per_timestamp.flatten() * batched_done
+    gae_extended = gae_per_timestamp.flatten()
 
     return (curr_value - gae_extended).mean() / 2
 
@@ -155,19 +154,19 @@ def get_actor_loss(
     gae: Float[Array, "num_envs d"],
     new_log_prob: Float[Array, "batch"],
     old_log_prob: Float[Array, "batch"],
-    batched_done: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    gae_done = gae.flatten() * batched_done
+    gae_flattened = gae.flatten()
 
     ratio = new_log_prob - old_log_prob
-    clipped_ratio = jnp.clip(ratio, loss_config["CLIP_EPS"], loss_config["CLIP_EPS"])
+    # clip centered at 0 as logprob
+    clipped_ratio = jnp.clip(ratio, -loss_config["CLIP_EPS"], loss_config["CLIP_EPS"])
 
     LOGGER.debug(
         f"Calculated ratio {dtype_as_str(ratio)} and clipped ratio {dtype_as_str(clipped_ratio)}"
     )
 
     # the ratio is actually the gain, so we negate it
-    return -jnp.minimum(ratio * gae_done, clipped_ratio * gae_done).mean()
+    return -jnp.minimum(ratio * gae_flattened, clipped_ratio * gae_flattened).mean()
 
 
 def get_loss(
@@ -204,9 +203,7 @@ def get_loss(
     )
 
     # calculate critic loss
-    critic_loss = get_critic_loss(
-        gae_all, t_model_values_unbatched, model_value, t_done_batched
-    )
+    critic_loss = get_critic_loss(gae_all, t_model_values_unbatched, model_value)
 
     LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
 
@@ -217,7 +214,6 @@ def get_loss(
         gae_all,
         model_logprob,
         calculate_model_logprob(old_model, trajectory),
-        t_done_batched,
     )
 
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")

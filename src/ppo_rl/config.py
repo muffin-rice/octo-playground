@@ -41,7 +41,7 @@ env_config = {
 visualizer_config = {
     "ENV_NAME": "CartPole-v1",
     "ENV_KWARGS": {},
-    "NUM_ENVS": 5,
+    "NUM_ENVS": 32,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_14000",
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_5000",
 }

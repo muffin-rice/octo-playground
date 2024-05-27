@@ -63,7 +63,7 @@ def get_env_step_function(
         obs_batch, env_state, reward, done, info = jax.vmap(
             env.step, in_axes=(0, 0, 0, None)
         )(key_env, env_state, action, env_params)
-        reward = (reward - zero_reward) * (1 - prev_done)
+        reward -= zero_reward
         LOGGER.debug(
             f"Observations have shape: {dtype_as_str(obs_batch)}\n"
             f"Reward has shape: {dtype_as_str(reward)}\n"
@@ -72,7 +72,7 @@ def get_env_step_function(
         )
 
         transition = Transition(
-            done,
+            jnp.logical_or(done, prev_done),
             action,
             reward,
             obs_batch,
