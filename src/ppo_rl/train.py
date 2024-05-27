@@ -51,7 +51,8 @@ def calculate_gae(
     trajectory: Trajectory,
 ) -> (Float[Array, "num_envs"], Float[Array, "num_envs num_steps"]):
     """Given the list of transitions across the trajectory, calculate
-    the GAE."""
+    the GAE.
+    Returns GAE at first timestep and V_Target=GAE_t + V"""
     t_done_batched, t_reward_batched = trajectory.t_done, trajectory.t_reward
 
     LOGGER.info(
@@ -106,7 +107,7 @@ def calculate_gae(
 
     overall_gae = gaes[0, :]
     gaes_normalized = (overall_gae - overall_gae.mean()) / (overall_gae.std() + 1e-8)
-    return gaes_normalized, gaes.transpose((1, 0))
+    return gaes_normalized, gaes.transpose((1, 0)) + trajectory.t_model_value
 
 
 def calculate_model_logprob(
@@ -138,7 +139,7 @@ def get_critic_loss(
 ) -> Float[Array, ""]:
     gae_extended = gae_per_timestamp.flatten()
 
-    return (curr_value - gae_extended).mean() / 2
+    return (jnp.square(curr_value - gae_extended)).mean() / 2
 
     # # calculate critic loss
     # clipped_model_value = t_model_values_batched + (
@@ -151,22 +152,22 @@ def get_critic_loss(
 
 
 def get_actor_loss(
-    gae: Float[Array, "num_envs d"],
-    new_log_prob: Float[Array, "batch"],
-    old_log_prob: Float[Array, "batch"],
+    gae: Float[Array, "num_envs"],
+    new_log_prob: Float[Array, "num_envs d"],
+    old_log_prob: Float[Array, "num_envs d"],
 ) -> Float[Array, ""]:
-    gae_flattened = gae.flatten()
-
-    ratio = new_log_prob - old_log_prob
+    ratio = jnp.exp(new_log_prob - old_log_prob)
     # clip centered at 0 as logprob
-    clipped_ratio = jnp.clip(ratio, -loss_config["CLIP_EPS"], loss_config["CLIP_EPS"])
+    clipped_ratio = jnp.clip(
+        ratio, 1.0 - loss_config["CLIP_EPS"], 1.0 + loss_config["CLIP_EPS"]
+    )
 
     LOGGER.debug(
         f"Calculated ratio {dtype_as_str(ratio)} and clipped ratio {dtype_as_str(clipped_ratio)}"
     )
 
     # the ratio is actually the gain, so we negate it
-    return -jnp.minimum(ratio * gae_flattened, clipped_ratio * gae_flattened).mean()
+    return -jnp.minimum(ratio * gae[:, None], clipped_ratio * gae[:, None]).mean()
 
 
 def get_loss(
@@ -195,6 +196,7 @@ def get_loss(
     # log probs for the trajectory is the sum across the steps
     model_logprob = model_pi.log_prob(t_actions_batched[:, 0])
 
+    # gae_all = v_target
     gae, gae_all = calculate_gae(trajectory)
 
     LOGGER.debug(
@@ -211,9 +213,11 @@ def get_loss(
 
     # calculate actor loss
     actor_loss = get_actor_loss(
-        gae_all,
-        model_logprob,
-        calculate_model_logprob(old_model, trajectory),
+        gae,
+        model_logprob.reshape(env_config["NUM_ENVS"], env_config["NUM_STEPS"]),
+        calculate_model_logprob(old_model, trajectory).reshape(
+            env_config["NUM_ENVS"], env_config["NUM_STEPS"]
+        ),
     )
 
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
@@ -232,6 +236,7 @@ def get_loss(
         critic_loss,
         entropy_loss,
         t_rewards_batched.sum(),
+        t_done_batched.sum(),
         gae.sum(),
     )
 
@@ -317,6 +322,7 @@ def write_loss(writer: SummaryWriter, loss_info: LossInformation) -> None:
     writer.add_scalar("loss/entropy_loss", np.asarray(loss_info.entropy_loss))
     writer.add_scalar("reward/gae", np.asarray(loss_info.gae))
     writer.add_scalar("reward/total_reward", np.asarray(loss_info.total_reward))
+    writer.add_scalar("reward/total_terminations", np.asarray(loss_info.total_done))
 
 
 if __name__ == "__main__":
@@ -325,6 +331,7 @@ if __name__ == "__main__":
 
     # initialize env
     env, env_params = gymnax.make(env_config["ENV_NAME"])
+    env_params.max_steps_in_episode = 500
 
     if env_config["CONTINUE"]:
         key, train_state, starting_epoch = load_train_state(env_config["PREVIOUS_SAVE"])
@@ -365,25 +372,27 @@ if __name__ == "__main__":
     for episode in range(env_config["NUM_EPISODES"]):
         key, key_step = jax.random.split(key, 2)
         curr_episode = starting_epoch + episode
-        train_state, loss_info = make_full_step(
+        train_state, loss_info_packed = make_full_step(
             key_step, (env, env_params), train_state
         )
-        write_loss(writer, loss_info[1])
+        total_loss, loss_info = loss_info_packed
+
+        write_loss(writer, loss_info)
 
         if (
             env_config["PRINT_ZERO_REWARD"]
-            and loss_info[1].total_reward.item()
+            and loss_info.total_reward.item()
             > env_config["NUM_STEPS"]
             * env_config["NUM_ENVS"]
             * env_config["ZERO_REWARD_DEFAULT"]
         ):
             LOGGER.info(
-                f"Non-zero reward on episode {episode}: {loss_info[1].total_reward.item()}"
+                f"Non-zero reward on episode {episode}: {loss_info.total_reward.item()}"
             )
 
         if curr_episode % env_config["CKPT_SAVE"] == 0:
             LOGGER.info(
-                f"Checkpointed episode {starting_epoch + episode} with total loss {np.array(loss_info[0])}, total reward {np.array(loss_info[1].total_reward)}"
+                f"Checkpointed episode {starting_epoch + episode} with total loss {total_loss.item()}, total reward {loss_info.total_reward.item()}, total dones {loss_info.total_done.item()}"
             )
             save_train_state(
                 f'{env_config["SAVE_FILE"]}_{curr_episode}',

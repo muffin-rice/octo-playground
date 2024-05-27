@@ -72,7 +72,7 @@ def get_env_step_function(
         )
 
         transition = Transition(
-            jnp.logical_or(done, prev_done),
+            done,
             action,
             reward,
             obs_batch,

@@ -10,16 +10,16 @@ loss_config = {
     # used for PPO to guarantee ratio used in backprop does not exceed (1-e, 1+e) unless it's in the right direction
     "CLIP_VAL": 100,  # TODO: is this needed? same as above, but is used for critic loss
     # loss coefficients
-    "ACTOR_LOSS": 1,  # value used in walkthrough
-    "CRITIC_LOSS": 0.5,  # value used in walkthrough
-    "ENTROPY_LOSS": 0.01,
+    "ACTOR_LOSS": 10,  # value used in walkthrough
+    "CRITIC_LOSS": 1,  # value used in walkthrough
+    "ENTROPY_LOSS": 0.5,
 }
 
 env_config = {
     "metadata": "surprise!",
     # env coefficients
     "STARTING_KEY": 0,
-    "ENV_NAME": "CartPole-v1",
+    "ENV_NAME": "MountainCar-v0",
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
@@ -29,7 +29,7 @@ env_config = {
     "PRINT_ZERO_REWARD": False,
     "ZERO_REWARD_DEFAULT": 0,  # pre-programmed zero reward, only used for logging. not negated (expected is negative)
     # checkpointing
-    "SAVE_FILE": "src/ppo_rl/ckpt/test",
+    "SAVE_FILE": "src/ppo_rl/ckpt/mountain-test",
     "CKPT_SAVE": 1000,
     "CONTINUE": False,
     "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test",  # is only used when continue is true
@@ -39,9 +39,9 @@ env_config = {
 }
 
 visualizer_config = {
-    "ENV_NAME": "CartPole-v1",
-    "ENV_KWARGS": {},
+    "ENV_NAME": env_config["ENV_NAME"],
+    "ENV_KWARGS": env_config["ENV_KWARGS"],
     "NUM_ENVS": 32,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_5000",
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/mountain-test_15000",
 }

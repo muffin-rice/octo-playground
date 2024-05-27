@@ -154,6 +154,7 @@ class LossInformation(NamedTuple):
     critic_loss: Float[Array, ""]
     entropy_loss: Float[Array, ""]
     total_reward: Float[Array, ""]  # just a full sum
+    total_done: Float[Array, ""]  # number of failures, just a full sum
     gae: Float[Array, ""]  # reward with decay applied to it
 
 

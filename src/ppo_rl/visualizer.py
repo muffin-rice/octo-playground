@@ -50,16 +50,18 @@ def stats_for_model(transition_list: [Transition], env_index=0):
     LOGGER.info(
         f"Total reward for env {env_index} is {create_trajectory_from_transitions(transition_list).t_reward[env_index, :].sum()}"
     )
-    _, gaes_per_timestamp = calculate_gae(
+    trajectory = create_trajectory_from_transitions(transition_list)
+    gae_all_envs, gaes_per_timestamp = calculate_gae(
         create_trajectory_from_transitions(transition_list)
     )
+    previous_step = 0
     for step_number, transition in enumerate(transition_list):
         chosen_action = transition.action[env_index]
         logprob = jnp.exp(transition.log_prob[env_index])
         action_value = transition.model_value[env_index]
         reward = transition.reward[env_index]
         done = transition.done[env_index]
-        gae = gaes_per_timestamp[step_number, env_index]
+        gae = gaes_per_timestamp[env_index, step_number]
 
         LOGGER.info(
             f"For timestamp {step_number}, action {chosen_action} was chosen with probability {logprob}.\n"
@@ -68,8 +70,13 @@ def stats_for_model(transition_list: [Transition], env_index=0):
         )
 
         if done:
-            LOGGER.info(f"Timestamp {step_number} is marked as a terminating timestamp")
-            yield()
+            LOGGER.info(
+                f"Timestamp {step_number} is marked as a terminating timestamp after {step_number - previous_step} steps;\n"
+                f"Actor loss is {get_actor_loss(gae_all_envs[env_index:env_index+1], trajectory.t_log_prob[env_index:env_index+1, previous_step:step_number], trajectory.t_log_prob[env_index:env_index+1, previous_step:step_number])}\n"
+                f"Critic loss is {get_critic_loss(gaes_per_timestamp[env_index:env_index+1, previous_step:step_number], trajectory.t_model_value[env_index:env_index+1, previous_step:step_number], trajectory.t_model_value[env_index:env_index+1, previous_step:step_number])}"
+            )
+            yield ()
+            previous_step = step_number
 
 
 if __name__ == "__main__":
@@ -77,8 +84,9 @@ if __name__ == "__main__":
 
     # initialize env
     env, env_params = gymnax.make(
-        visualizer_config["ENV_NAME"], **visualizer_config["ENV_KWARGS"]
+        visualizer_config["ENV_NAME"]
     )
+
     key, train_state, starting_epoch = load_train_state(
         visualizer_config["PREVIOUS_SAVE"]
     )
