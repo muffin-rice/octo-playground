@@ -146,7 +146,7 @@ def calculate_model_logprob(
 def get_critic_loss(
     gae_per_timestamp: Float[Array, "num_envs d"],
     batched_values: Float[Array, "num_envs d"],
-    curr_value: Float[Array, "num_envs d"]
+    curr_value: Float[Array, "num_envs d"],
 ) -> Float[Array, ""]:
     gae_extended = gae_per_timestamp.flatten()
 
@@ -161,6 +161,7 @@ def get_critic_loss(
     # # TODO: why the /2?
     # # normalize by env, agents, num steps
     # critic_loss = jnp.maximum(unclipped_value_loss, clipped_value_loss).mean() / 2
+
 
 def get_actor_loss(
     gae: Float[Array, "batch"],

@@ -4,15 +4,59 @@ import equinox as eqx
 import gymnax
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Bool, Float, Int
 import optax
 from typing import NamedTuple, Dict
 
 from src.logger import Logger, LoggingLevel
 
 
-class ActorCritic(eqx.Module):
-    """Actor Critic class for PPO"""
+class ActorCriticDiscrete(eqx.Module):
+    """Actor Critic class for PPO. Discrete action dimension."""
+
+    actor_layers: []
+    critic_layers: []
+    LOGGER = Logger("actor_critic", logging_level=LoggingLevel.DEBUG)
+
+    def __init__(self, key: Array, observation_dim: int, action_dim: int, config: dict):
+        self.LOGGER.info(
+            f"Creating model with key {key}, observation dim {observation_dim}, action dim {action_dim}"
+        )
+        keyx = jax.random.split(key, 10)
+
+        self.actor_layers = [
+            eqx.nn.Linear(observation_dim, 64, key=keyx[0]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 64, key=keyx[1]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, action_dim, key=keyx[2]),
+        ]
+
+        self.critic_layers = [
+            eqx.nn.Linear(observation_dim, 64, key=keyx[3]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 64, key=keyx[4]),
+            jax.nn.tanh,
+            eqx.nn.Linear(64, 1, key=keyx[5]),
+        ]
+
+    def __call__(self, x: Array) -> (distrax.Categorical, Array):
+        self.LOGGER.debug(f"Input received with shape {x.shape}")
+        actor_mean = x
+        for actor_layer in self.actor_layers:
+            actor_mean = actor_layer(actor_mean)
+
+        pi = distrax.Categorical(logits=actor_mean)
+
+        critic_output = x
+        for critic_layer in self.critic_layers:
+            critic_output = critic_layer(critic_output)
+
+        return pi, jnp.squeeze(critic_output, axis=-1)
+
+
+class ActorCriticContinuous(eqx.Module):
+    """Actor Critic class for PPO. Continuous action dimension"""
 
     actor_layers: []
     critic_layers: []
@@ -91,6 +135,7 @@ class TrajectoryState(NamedTuple):
     key: Array
     env_state: gymnax.EnvState
     env_obs: chex.Array
+    done: Bool[Array, "num_envs"]
 
 
 class TrainState(NamedTuple):

@@ -19,16 +19,18 @@ env_config = {
     "metadata": "surprise!",
     # env coefficients
     "STARTING_KEY": 0,
-    "ENV_NAME": "MountainCar-v0",
+    "ENV_NAME": "CartPole-v1",
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
     "NUM_EPISODES": 50000,
     "NUM_STEPS": 300,  # episode length
     "ZERO_REWARD": 0,  # negative reward when reward is 0
+    "PRINT_ZERO_REWARD": False,
+    "ZERO_REWARD_DEFAULT": 0,  # pre-programmed zero reward, only used for logging. not negated (expected is negative)
     # checkpointing
     "SAVE_FILE": "src/ppo_rl/ckpt/test",
-    "CKPT_SAVE": 100,
+    "CKPT_SAVE": 1000,
     "CONTINUE": False,
     "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test",  # is only used when continue is true
     # tensorboard
@@ -37,9 +39,9 @@ env_config = {
 }
 
 visualizer_config = {
-    "ENV_NAME": "MountainCar-v0",
+    "ENV_NAME": "CartPole-v1",
     "ENV_KWARGS": {},
     "NUM_ENVS": 5,
     "NUM_STEPS": env_config["NUM_STEPS"],
-    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_43700",
+    "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test_14000",
 }

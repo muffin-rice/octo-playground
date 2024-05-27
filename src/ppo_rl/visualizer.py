@@ -44,21 +44,31 @@ def get_state(state: EnvState, state_index=0) -> EnvState:
         state.time[state_index],
     )
 
-def stats_for_model(transition_list: [Transition], env_index = 0):
+
+def stats_for_model(transition_list: [Transition], env_index=0):
     LOGGER.info(f"Printing transition stats for environment {env_index}")
-    _, gaes_per_timestamp = calculate_gae(create_trajectory_from_transitions(transition_list))
+    _, gaes_per_timestamp = calculate_gae(
+        create_trajectory_from_transitions(transition_list)
+    )
     for step_number, transition in enumerate(transition_list):
         chosen_action = transition.action[env_index]
         logprob = jnp.exp(transition.log_prob[env_index])
         action_value = transition.model_value[env_index]
         reward = transition.reward[env_index]
-        done = transition.reward[env_index]
+        done = transition.done[env_index]
         gae = gaes_per_timestamp[step_number, env_index]
 
-        LOGGER.info(f"For timestamp {step_number}, action {chosen_action} was chosen with probability {logprob}.\n"
-                    f"Value calculated as {action_value}, gae is {gae}, reward is {reward}.\n"
-                    f"Done is {done}")
+        LOGGER.info(
+            f"For timestamp {step_number}, action {chosen_action} was chosen with probability {logprob}.\n"
+            f"Value calculated as {action_value}, gae is {gae}, reward is {reward}.\n"
+            f"Done is {done}"
+        )
 
+        if done:
+            LOGGER.info(
+                f"Timestamp {step_number} is marked as the terminating timestamp"
+            )
+            return
 
 
 if __name__ == "__main__":
@@ -84,7 +94,12 @@ if __name__ == "__main__":
     # reset env
     env_obs, env_state = jax.vmap(env.reset, in_axes=(0, None))(key_envs, env_params)
 
-    trajectory_state = TrajectoryState(key, env_state, env_obs)
+    trajectory_state = TrajectoryState(
+        key,
+        env_state,
+        env_obs,
+        jnp.zeros((visualizer_config["NUM_ENVS"],), dtype=jnp.bool),
+    )
 
     func_env_step = get_env_step_function(
         (env, env_params), model, visualizer_config["NUM_ENVS"], 0
@@ -118,6 +133,8 @@ if __name__ == "__main__":
 
         for transition in transitions:
             env.step(transition.action[env_number].item())
+            if transition.done[env_number]:
+                break
 
         env.close()
 

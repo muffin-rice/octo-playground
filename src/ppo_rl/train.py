@@ -23,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.ppo_rl.config import model_config, loss_config, env_config
 from src.ppo_rl.ppo_types import (
-    ActorCritic,
+    ActorCriticDiscrete,
     LossInformation,
     TrainState,
     Trajectory,
@@ -49,7 +49,7 @@ def linear_schedule(count) -> float:
 
 def calculate_gae(
     trajectory: Trajectory,
-) -> (Float[Array, "batch"], Float[Array, "batch num_steps"]):
+) -> (Float[Array, "num_envs"], Float[Array, "num_envs num_steps"]):
     """Given the list of transitions across the trajectory, calculate
     the GAE."""
     t_done_batched, t_reward_batched = trajectory.t_done, trajectory.t_reward
@@ -58,16 +58,15 @@ def calculate_gae(
         f"Batched trajectory done and reward: {dtype_as_str(t_done_batched)} {dtype_as_str(t_reward_batched)}"
     )
 
+    # note: this is not the previous value as we lax.scan in reverse
     class GAECarryState(NamedTuple):
-        next_gae: Float[
-            Array, "batch"
-        ]  # note: this is not the previous value as we lax.scan in reverse
-        next_value: Float[Array, "batch"]
+        next_gae: Float[Array, "num_envs"]
+        next_value: Float[Array, "num_envs"]
         index: int
 
     def calculate_advantage(
-        carry_state: GAECarryState, curr_value: Float[Array, "batch"]
-    ) -> (GAECarryState, Float[Array, "batch"]):
+        carry_state: GAECarryState, curr_value: Float[Array, "num_envs"]
+    ) -> (GAECarryState, Float[Array, "num_envs"]):
         """To be used in jax.lax.scan.
         First param (constantly updated and persisted) is the GAE up until
         that point and the previously used value.
@@ -82,7 +81,7 @@ def calculate_gae(
         gae = (
             reward
             - curr_value
-            + next_value * loss_config["GAMMA"]
+            + next_value * loss_config["GAMMA"] * (1 - done)
             + loss_config["GAMMA"] * loss_config["GAE_LAMBDA"] * (1 - done) * next_gae
         )
         return GAECarryState(next_gae=gae, next_value=curr_value, index=index + 1), gae
@@ -111,7 +110,7 @@ def calculate_gae(
 
 
 def calculate_model_logprob(
-    model: ActorCritic,
+    model: ActorCriticDiscrete,
     trajectory: Trajectory,
 ) -> Float[Array, "batch"]:
     """Given old actor/critic, generate logprob for given trajectory batch."""
@@ -131,12 +130,14 @@ def calculate_model_logprob(
 
     return model_logprobs
 
+
 def get_critic_loss(
     gae_per_timestamp: Float[Array, "num_envs d"],
     batched_values: Float[Array, "num_envs d"],
-    curr_value: Float[Array, "num_envs d"]
+    curr_value: Float[Array, "num_envs d"],
+    batched_done: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    gae_extended = gae_per_timestamp.flatten()
+    gae_extended = gae_per_timestamp.flatten() * batched_done
 
     return (curr_value - gae_extended).mean() / 2
 
@@ -151,37 +152,39 @@ def get_critic_loss(
 
 
 def get_actor_loss(
-    gae: Float[Array, "batch"],
+    gae: Float[Array, "num_envs d"],
     new_log_prob: Float[Array, "batch"],
     old_log_prob: Float[Array, "batch"],
+    batched_done: Float[Array, "batch"],
 ) -> Float[Array, ""]:
-    ratio = (new_log_prob - old_log_prob).reshape(
-        env_config["NUM_ENVS"], env_config["NUM_STEPS"]
-    )
-    clipped_ratio = jnp.clip(
-        ratio, 1.0 - loss_config["CLIP_EPS"], 1.0 + loss_config["CLIP_EPS"]
-    )
+    gae_done = gae.flatten() * batched_done
+
+    ratio = new_log_prob - old_log_prob
+    clipped_ratio = jnp.clip(ratio, loss_config["CLIP_EPS"], loss_config["CLIP_EPS"])
 
     LOGGER.debug(
         f"Calculated ratio {dtype_as_str(ratio)} and clipped ratio {dtype_as_str(clipped_ratio)}"
     )
 
     # the ratio is actually the gain, so we negate it
-    return -jnp.minimum(ratio * gae[:, None], clipped_ratio * gae[:, None]).mean()
+    return -jnp.minimum(ratio * gae_done, clipped_ratio * gae_done).mean()
 
 
 def get_loss(
-    model: ActorCritic,  # filter_value_and_grad requires backprop'd object to be first
+    model: ActorCriticDiscrete,  # filter_value_and_grad requires backprop'd object to be first
     trajectory: Trajectory,
-    old_model: ActorCritic,
+    old_model: ActorCriticDiscrete,
 ) -> (Float, LossInformation):
     """Compute loss of entire trajectory"""
     # first batch out the trajectory
-    t_obs_batched = trajectory.t_obs.reshape(-1, trajectory.t_obs.shape[2])
-    t_actions_batched = trajectory.t_action.reshape(-1, 1)
+    batch_size = env_config["NUM_ENVS"] * env_config["NUM_STEPS"]
+
+    t_obs_batched = trajectory.t_obs.reshape(batch_size, trajectory.t_obs.shape[2])
+    t_actions_batched = trajectory.t_action.reshape(batch_size, 1)
     t_model_values_unbatched = trajectory.t_model_value
-    t_model_values_batched = trajectory.t_model_value.reshape(-1, 1)
-    t_rewards_batched = trajectory.t_reward.reshape(-1, 1)
+    t_model_values_batched = trajectory.t_model_value.reshape(batch_size, 1)
+    t_rewards_batched = trajectory.t_reward.reshape(batch_size, 1)
+    t_done_batched = trajectory.t_done.reshape(batch_size, 1)
 
     LOGGER.debug(
         f"Batchified objects in trajectory: observation {dtype_as_str(t_obs_batched)}, actions {dtype_as_str(t_actions_batched)}, values {dtype_as_str(t_model_values_batched)}"
@@ -193,14 +196,17 @@ def get_loss(
     # log probs for the trajectory is the sum across the steps
     model_logprob = model_pi.log_prob(t_actions_batched[:, 0])
 
+    gae, gae_all = calculate_gae(trajectory)
+
     LOGGER.debug(
+        f"Gae calculated: {dtype_as_str(gae)} and {dtype_as_str(gae_all)}. "
         f"Calculating critic loss from logprob {dtype_as_str(model_logprob)} and value {dtype_as_str(model_value)}..."
     )
 
-    gae, gae_all = calculate_gae(trajectory)
-
     # calculate critic loss
-    critic_loss = get_critic_loss(gae_all, t_model_values_unbatched, model_value)
+    critic_loss = get_critic_loss(
+        gae_all, t_model_values_unbatched, model_value, t_done_batched
+    )
 
     LOGGER.info(f"Calculated critic loss: {dtype_as_str(critic_loss)}")
 
@@ -208,9 +214,10 @@ def get_loss(
 
     # calculate actor loss
     actor_loss = get_actor_loss(
-        gae,
+        gae_all,
         model_logprob,
         calculate_model_logprob(old_model, trajectory),
+        t_done_batched,
     )
 
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
@@ -255,7 +262,9 @@ def make_full_step(
         f"Finished reset. Observation: {dtype_as_str(obs)}\nEnv State: {dtype_as_str(env_state)}"
     )
 
-    trajectory_state = TrajectoryState(key, env_state, obs)
+    trajectory_state = TrajectoryState(
+        key, env_state, obs, jnp.zeros((env_config["NUM_ENVS"],), dtype=jnp.bool)
+    )
 
     func_env_step = get_env_step_function(
         env_with_params, model, env_config["NUM_ENVS"], env_config["ZERO_REWARD"]
@@ -330,7 +339,7 @@ if __name__ == "__main__":
         # initialize model
         key, key_network = jax.random.split(key, 2)
 
-        model = ActorCritic(
+        model = ActorCriticDiscrete(
             key_network,
             prod(env.observation_space(env_params).shape),
             env.action_space(env_params).n,
@@ -366,8 +375,11 @@ if __name__ == "__main__":
         write_loss(writer, loss_info[1])
 
         if (
-            loss_info[1].total_reward.item()
-            > -env_config["NUM_STEPS"] * env_config["NUM_ENVS"]
+            env_config["PRINT_ZERO_REWARD"]
+            and loss_info[1].total_reward.item()
+            > env_config["NUM_STEPS"]
+            * env_config["NUM_ENVS"]
+            * env_config["ZERO_REWARD_DEFAULT"]
         ):
             LOGGER.info(
                 f"Non-zero reward on episode {episode}: {loss_info[1].total_reward.item()}"

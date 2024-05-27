@@ -36,7 +36,7 @@ def get_env_step_function(
         To be used in jax.lax.scan to grab the entire trajectory.
         Returns shared first arg (trajectory_state) and the transition minibatch"""
 
-        key, env_state, env_obs_array = trajectory_state
+        key, env_state, env_obs_array, prev_done = trajectory_state
 
         # predictions for this current state
         model_output = jax.vmap(model)(env_obs_array)
@@ -63,7 +63,7 @@ def get_env_step_function(
         obs_batch, env_state, reward, done, info = jax.vmap(
             env.step, in_axes=(0, 0, 0, None)
         )(key_env, env_state, action, env_params)
-        reward -= zero_reward
+        reward = (reward - zero_reward) * (1 - prev_done)
         LOGGER.debug(
             f"Observations have shape: {dtype_as_str(obs_batch)}\n"
             f"Reward has shape: {dtype_as_str(reward)}\n"
@@ -81,7 +81,7 @@ def get_env_step_function(
             log_prob,
         )
 
-        new_trajectory_state = TrajectoryState(key, env_state, obs_batch)
+        new_trajectory_state = TrajectoryState(key, env_state, obs_batch, done)
 
         return new_trajectory_state, transition
 
