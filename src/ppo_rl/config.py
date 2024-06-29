@@ -19,7 +19,7 @@ env_config = {
     "metadata": "surprise!",
     # env coefficients
     "STARTING_KEY": 0,
-    "ENV_NAME": "MountainCar-v0",
+    "ENV_NAME": "Pendulum-v1",
     # "ENV_KWARGS": { "layout": "cramped_room" },
     "ENV_KWARGS": {},
     "NUM_ENVS": 64,
@@ -29,7 +29,7 @@ env_config = {
     "PRINT_ZERO_REWARD": False,
     "ZERO_REWARD_DEFAULT": 0,  # pre-programmed zero reward, only used for logging. not negated (expected is negative)
     # checkpointing
-    "SAVE_FILE": "src/ppo_rl/ckpt/mountain-test",
+    "SAVE_FILE": "src/ppo_rl/ckpt/pendulum-test",
     "CKPT_SAVE": 1000,
     "CONTINUE": False,
     "PREVIOUS_SAVE": "src/ppo_rl/ckpt/test",  # is only used when continue is true

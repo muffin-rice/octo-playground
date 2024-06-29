@@ -83,9 +83,7 @@ if __name__ == "__main__":
     LOGGER.info("Hello!")
 
     # initialize env
-    env, env_params = gymnax.make(
-        visualizer_config["ENV_NAME"]
-    )
+    env, env_params = gymnax.make(visualizer_config["ENV_NAME"])
 
     key, train_state, starting_epoch = load_train_state(
         visualizer_config["PREVIOUS_SAVE"]

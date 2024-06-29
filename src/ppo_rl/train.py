@@ -17,13 +17,14 @@ import gymnax
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
+import distrax
 import optax
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from src.ppo_rl.config import model_config, loss_config, env_config
 from src.ppo_rl.ppo_types import (
-    ActorCriticDiscrete,
+    ActorCriticGymnax,
     LossInformation,
     TrainState,
     Trajectory,
@@ -111,7 +112,7 @@ def calculate_gae(
 
 
 def calculate_model_logprob(
-    model: ActorCriticDiscrete,
+    model: ActorCriticGymnax,
     trajectory: Trajectory,
 ) -> Float[Array, "batch"]:
     """Given old actor/critic, generate logprob for given trajectory batch."""
@@ -121,10 +122,9 @@ def calculate_model_logprob(
     # logits (not logged) for each step, each batch
     model_pi, model_value = jax.vmap(model)(t_obs_batched)
     # log probs for the trajectory is the sum across the steps
-    model_logprobs = model_pi.log_prob(t_action_batched[:, 0])
+    model_logprobs = model_pi.log_prob(t_action_batched)
 
     LOGGER.debug(
-        f"Categoricals for trajectory: {model_pi.num_categories}\n"
         f"Logprobs for trajectory: {dtype_as_str(model_logprobs)}\n"
         f"Actions for trajectory: {dtype_as_str(t_action_batched)}"
     )
@@ -170,10 +170,18 @@ def get_actor_loss(
     return -jnp.minimum(ratio * gae[:, None], clipped_ratio * gae[:, None]).mean()
 
 
+def get_entropy(model_pi: distrax.Distribution) -> jnp.float32:
+    """Entropy regularization for loss"""
+    if "Normal" in str(type(model_pi)):
+        return 0
+    else:
+        return model_pi.entropy().mean()
+
+
 def get_loss(
-    model: ActorCriticDiscrete,  # filter_value_and_grad requires backprop'd object to be first
+    model: ActorCriticGymnax,  # filter_value_and_grad requires backprop'd object to be first
     trajectory: Trajectory,
-    old_model: ActorCriticDiscrete,
+    old_model: ActorCriticGymnax,
 ) -> (Float, LossInformation):
     """Compute loss of entire trajectory"""
     # first batch out the trajectory
@@ -194,7 +202,8 @@ def get_loss(
     model_pi, model_value = jax.vmap(model)(t_obs_batched)
 
     # log probs for the trajectory is the sum across the steps
-    model_logprob = model_pi.log_prob(t_actions_batched[:, 0])
+    # sometimes will need to be t_actions_batched[:, 0], sometimes not
+    model_logprob = model_pi.log_prob(t_actions_batched)
 
     # gae_all = v_target
     gae, gae_all = calculate_gae(trajectory)
@@ -223,7 +232,7 @@ def get_loss(
     LOGGER.info(f"Calculated actor loss: {dtype_as_str(actor_loss)}")
 
     # entropy
-    entropy_loss = model_pi.entropy().mean()
+    entropy_loss = get_entropy(model_pi)
 
     total_loss = (
         loss_config["CRITIC_LOSS"] * critic_loss
@@ -331,7 +340,6 @@ if __name__ == "__main__":
 
     # initialize env
     env, env_params = gymnax.make(env_config["ENV_NAME"])
-    env_params.max_steps_in_episode = 500
 
     if env_config["CONTINUE"]:
         key, train_state, starting_epoch = load_train_state(env_config["PREVIOUS_SAVE"])
@@ -342,10 +350,10 @@ if __name__ == "__main__":
         # initialize model
         key, key_network = jax.random.split(key, 2)
 
-        model = ActorCriticDiscrete(
+        model = ActorCriticGymnax(
             key_network,
             prod(env.observation_space(env_params).shape),
-            env.action_space(env_params).n,
+            env.action_space(env_params),
             model_config,
         )
         old_model = model

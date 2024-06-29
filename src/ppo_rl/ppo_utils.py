@@ -40,12 +40,9 @@ def get_env_step_function(
 
         # predictions for this current state
         model_output = jax.vmap(model)(env_obs_array)
-        model_pi: distrax.Categorical = model_output[0]
+        model_pi = model_output[0]
         model_value: Array = model_output[1]
-        LOGGER.debug(
-            f"Pi minibatch has num categories {model_pi.num_categories}, "
-            f"Value has shape {model_value.shape}"
-        )
+        LOGGER.debug(f"Pi minibatch created, " f"Value has shape {model_value.shape}")
 
         # sample from pi
         key, key_action = jax.random.split(key, 2)
